@@ -1,0 +1,15 @@
+.venv/
+.worktrees/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.egg-info/
+.DS_Store
+.uv-cache/
+artifacts/*.json
+artifacts/*.jsonl
+artifacts/*.db
+.superpowers/
+.playwright-cli/
+web/node_modules/
+web/.next/
