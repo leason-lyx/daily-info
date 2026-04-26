@@ -1,0 +1,163 @@
+version: 1
+retired_source_ids:
+  - arxiv-cs-cl
+sources:
+  - id: arxiv-cs-ai
+    name: arXiv cs.AI
+    content_type: paper
+    platform: arxiv
+    homepage_url: https://arxiv.org/list/cs.AI/recent
+    group: Papers
+    default_tags:
+      - paper
+      - ai
+    attempts:
+      - adapter: feed
+        url: https://export.arxiv.org/api/query?search_query=cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=50
+    fulltext:
+      strategy: feed_field
+    stability_level: stable
+  - id: arxiv-cs-se
+    name: arXiv cs.SE
+    content_type: paper
+    platform: arxiv
+    homepage_url: https://arxiv.org/list/cs.SE/recent
+    group: Papers
+    default_tags:
+      - paper
+      - software-engineering
+    attempts:
+      - adapter: feed
+        url: https://export.arxiv.org/api/query?search_query=cat:cs.SE&sortBy=submittedDate&sortOrder=descending&max_results=50
+    fulltext:
+      strategy: feed_field
+    stability_level: stable
+  - id: openai-news
+    name: OpenAI News
+    content_type: blog
+    platform: openai
+    homepage_url: https://openai.com/news/
+    group: Model Labs
+    default_tags:
+      - openai
+    attempts:
+      - kind: rsshub
+        adapter: rsshub
+        route: /openai/news?limit=20
+        config:
+          timeout: 12
+    fulltext:
+      strategy: feed_field
+    stability_level: stable
+  - id: openai-research
+    name: OpenAI Research
+    content_type: blog
+    platform: openai
+    homepage_url: https://openai.com/research/
+    group: Model Labs
+    default_tags:
+      - openai
+      - research
+    attempts:
+      - kind: rsshub
+        adapter: rsshub
+        route: /openai/research?limit=20
+        config:
+          timeout: 12
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
+  - id: anthropic-news
+    name: Anthropic News
+    content_type: blog
+    platform: anthropic
+    homepage_url: https://www.anthropic.com/news
+    group: Model Labs
+    default_tags:
+      - anthropic
+    attempts:
+      - kind: rsshub
+        adapter: rsshub
+        route: /anthropic/news?limit=20
+        config:
+          timeout: 12
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
+  - id: anthropic-research
+    name: Anthropic Research
+    content_type: blog
+    platform: anthropic
+    homepage_url: https://www.anthropic.com/research
+    group: Model Labs
+    default_tags:
+      - anthropic
+      - research
+    attempts:
+      - kind: rsshub
+        adapter: rsshub
+        route: /anthropic/research?limit=20
+        config:
+          timeout: 12
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
+  - id: anthropic-engineering
+    name: Anthropic Engineering
+    content_type: blog
+    platform: anthropic
+    homepage_url: https://www.anthropic.com/engineering
+    group: Model Labs
+    default_tags:
+      - anthropic
+      - engineering
+    attempts:
+      - kind: rsshub
+        adapter: rsshub
+        route: /anthropic/engineering?limit=20
+        config:
+          timeout: 12
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
+  - id: huggingface-blog
+    name: Hugging Face Blog
+    content_type: blog
+    platform: huggingface
+    homepage_url: https://huggingface.co/blog
+    group: Engineering Blogs
+    default_tags:
+      - huggingface
+    attempts:
+      - adapter: feed
+        url: https://huggingface.co/blog/feed.xml
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
+  - id: juya-ai-daily
+    name: 橘鸦AI早报
+    content_type: blog
+    platform: juya
+    homepage_url: https://imjuya.github.io/juya-ai-daily/
+    enabled: true
+    group: AI News
+    language_hint: zh-CN
+    default_tags:
+      - ai-daily
+      - zh
+    attempts:
+      - adapter: feed
+        url: https://imjuya.github.io/juya-ai-daily/rss.xml
+    fulltext:
+      strategy: feed_field
+    stability_level: stable

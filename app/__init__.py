@@ -1,0 +1,2 @@
+"""Daily Info backend package."""
+
