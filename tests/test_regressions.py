@@ -447,13 +447,13 @@ def test_health_exposes_job_queue_counts_targets_and_limits(tmp_path: Path) -> N
     assert result.stdout.strip() == "ok"
 
 
-def test_builtin_sources_replace_arxiv_cs_cl_with_cs_se(tmp_path: Path) -> None:
+def test_builtin_sources_include_arxiv_api_categories(tmp_path: Path) -> None:
     result = run_python(
         """
         from sqlalchemy import select
 
         from app.db import SessionLocal, init_db
-        from app.catalog import ARXIV_CS_AI_API_URL, ARXIV_CS_SE_API_URL, DEFAULT_SOURCE_PACK_PATH
+        from app.catalog import ARXIV_CS_AI_API_URL, ARXIV_CS_CL_API_URL, ARXIV_CS_SE_API_URL, DEFAULT_SOURCE_PACK_PATH
         from app.models import Source
         from app.services import load_source_pack, seed_builtin_sources
         from app.utils import loads
@@ -465,7 +465,7 @@ def test_builtin_sources_replace_arxiv_cs_cl_with_cs_se(tmp_path: Path) -> None:
             pack_ids = {source.id for source in load_source_pack(DEFAULT_SOURCE_PACK_PATH)}
             assert pack_ids <= source_ids
             assert "arxiv-cs-se" in source_ids
-            assert "arxiv-cs-cl" not in source_ids
+            assert "arxiv-cs-cl" in source_ids
             source = db.get(Source, "arxiv-cs-se")
             assert source.name == "arXiv cs.SE"
             assert source.content_type == "paper"
@@ -473,6 +473,13 @@ def test_builtin_sources_replace_arxiv_cs_cl_with_cs_se(tmp_path: Path) -> None:
             assert loads(source.default_tags, []) == ["paper", "software-engineering"]
             assert source.attempts[0].url == ARXIV_CS_SE_API_URL
             assert "rss.arxiv.org/rss/cs.SE" not in source.attempts[0].url
+            source = db.get(Source, "arxiv-cs-cl")
+            assert source.name == "arXiv cs.CL"
+            assert source.content_type == "paper"
+            assert source.homepage_url == "https://arxiv.org/list/cs.CL/recent"
+            assert loads(source.default_tags, []) == ["paper", "nlp"]
+            assert source.attempts[0].url == ARXIV_CS_CL_API_URL
+            assert "rss.arxiv.org/rss/cs.CL" not in source.attempts[0].url
             source = db.get(Source, "arxiv-cs-ai")
             assert source.name == "arXiv cs.AI"
             assert source.content_type == "paper"
@@ -482,6 +489,48 @@ def test_builtin_sources_replace_arxiv_cs_cl_with_cs_se(tmp_path: Path) -> None:
         print("ok")
         """,
         sqlite_url(tmp_path / "builtin-cs-se.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_default_pack_adds_ai_and_tech_media_sources(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from app.catalog import DEFAULT_SOURCE_PACK_PATH
+        from app.services import load_source_pack
+
+        sources = {source.id: source for source in load_source_pack(DEFAULT_SOURCE_PACK_PATH)}
+        expected_blog_sources = {
+            "google-ai-blog",
+            "google-deepmind-blog",
+            "nvidia-blog",
+            "mit-technology-review-ai",
+            "the-verge-tech",
+            "techcrunch-ai",
+            "ars-technica-ai",
+            "wired-ai",
+            "404-media",
+        }
+        assert expected_blog_sources <= set(sources)
+        tech_media_sources = {
+            "mit-technology-review-ai",
+            "the-verge-tech",
+            "techcrunch-ai",
+            "ars-technica-ai",
+            "wired-ai",
+            "404-media",
+        }
+        for source_id in expected_blog_sources:
+            source = sources[source_id]
+            assert source.content_type == "blog"
+            assert source.fulltext["strategy"] == "feed_or_detail"
+            assert source.fulltext["min_feed_fulltext_chars"] == 1200
+            assert source.fulltext["max_fulltext_per_run"] == 20
+            assert source.attempts[0].adapter == "feed"
+        assert {sources[source_id].group for source_id in tech_media_sources} == {"Tech Media"}
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "default-pack-tech-media.db"),
     )
     assert result.stdout.strip() == "ok"
 
@@ -617,15 +666,12 @@ def test_user_owned_arxiv_cs_se_attempt_is_not_overwritten(tmp_path: Path) -> No
     assert result.stdout.strip() == "ok"
 
 
-def test_retired_builtin_arxiv_cs_cl_cleanup_removes_related_data(tmp_path: Path) -> None:
+def test_builtin_arxiv_cs_cl_legacy_attempt_syncs_to_api_url(tmp_path: Path) -> None:
     result = run_python(
         """
-        from datetime import datetime, timezone
-
-        from sqlalchemy import func, select
-
+        from app.catalog import ARXIV_CS_CL_API_URL
         from app.db import SessionLocal, init_db
-        from app.models import Fulltext, Item, Job, RawEntry, Source, SourceAttempt, SourceRun, Summary
+        from app.models import Source, SourceAttempt
         from app.services import seed_builtin_sources
         from app.utils import dumps
 
@@ -641,64 +687,53 @@ def test_retired_builtin_arxiv_cs_cl_cleanup_removes_related_data(tmp_path: Path
             )
             source.attempts = [SourceAttempt(adapter="feed", url="https://rss.arxiv.org/rss/cs.CL")]
             db.add(source)
-            db.flush()
-            item = Item(
-                source_id="arxiv-cs-cl",
-                canonical_url="https://arxiv.org/abs/1",
-                title="Retired paper",
-                url="https://arxiv.org/abs/1",
-                content_type="paper",
-                platform="arxiv",
-                source_name="arXiv cs.CL",
-                raw_text="abstract",
-            )
-            db.add(item)
-            db.flush()
-            db.add_all([
-                RawEntry(source_id="arxiv-cs-cl", entry_hash="hash", title="Raw", url="https://arxiv.org/abs/1"),
-                SourceRun(source_id="arxiv-cs-cl", status="succeeded", finished_at=datetime.now(timezone.utc)),
-                Fulltext(item_id=item.id, extractor="feed_field", text="abstract"),
-                Summary(item_id=item.id, status="ready", data=dumps({"one_sentence": "done"})),
-                Job(type="fetch_source", status="queued", payload=dumps({"source_id": "arxiv-cs-cl"})),
-                Job(type="summarize_item", status="queued", payload=dumps({"item_id": item.id})),
-            ])
             db.commit()
 
             seed_builtin_sources(db)
-            assert db.get(Source, "arxiv-cs-cl") is None
-            assert db.get(Source, "arxiv-cs-se") is not None
-            for model in [Item, RawEntry, SourceRun, Fulltext, Summary, Job]:
-                assert db.execute(select(func.count()).select_from(model)).scalar_one() == 0
+            source = db.get(Source, "arxiv-cs-cl")
+            assert source is not None
+            assert len(source.attempts) == 1
+            assert source.attempts[0].adapter == "feed"
+            assert source.attempts[0].url == ARXIV_CS_CL_API_URL
         print("ok")
         """,
-        sqlite_url(tmp_path / "retired-cleanup.db"),
+        sqlite_url(tmp_path / "builtin-cs-cl-sync.db"),
     )
     assert result.stdout.strip() == "ok"
 
 
-def test_retired_source_cleanup_preserves_user_owned_arxiv_cs_cl(tmp_path: Path) -> None:
+def test_user_owned_arxiv_cs_cl_attempt_is_not_overwritten(tmp_path: Path) -> None:
     result = run_python(
         """
         from sqlalchemy import select
 
+        from app.catalog import ARXIV_CS_CL_API_URL
         from app.db import SessionLocal, init_db
-        from app.models import Source
+        from app.models import Source, SourceAttempt
         from app.services import seed_builtin_sources
+
+        custom_url = "https://example.com/my-cs-cl.xml"
 
         init_db()
         with SessionLocal() as db:
-            db.add(Source(id="arxiv-cs-cl", name="My cs.CL", content_type="paper", platform="arxiv", is_builtin=False))
+            source = Source(id="arxiv-cs-cl", name="My cs.CL", content_type="paper", platform="arxiv", is_builtin=False)
+            source.attempts = [SourceAttempt(adapter="feed", url=custom_url)]
+            db.add(source)
             db.commit()
+
             seed_builtin_sources(db)
             source = db.get(Source, "arxiv-cs-cl")
             assert source is not None
             assert source.name == "My cs.CL"
             assert source.is_builtin is False
+            assert len(source.attempts) == 1
+            assert source.attempts[0].url == custom_url
+            assert source.attempts[0].url != ARXIV_CS_CL_API_URL
             source_ids = set(db.execute(select(Source.id)).scalars())
             assert "arxiv-cs-se" in source_ids
         print("ok")
         """,
-        sqlite_url(tmp_path / "retired-user-source.db"),
+        sqlite_url(tmp_path / "user-cs-cl-preserve.db"),
     )
     assert result.stdout.strip() == "ok"
 

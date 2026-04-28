@@ -7,12 +7,12 @@ import { Check, ExternalLink, Eye, EyeOff, RefreshCcw, Search, Sparkles, Star } 
 import { api, Item, Source } from "@/lib/api";
 
 const NO_SOURCE_SENTINEL = "__none__";
-const CONTENT_TYPES = ["paper", "blog", "post"] as const;
 const CONTENT_TYPE_LABELS: Record<string, string> = {
   paper: "Paper",
   blog: "Blog",
   post: "Post",
 };
+const SOURCE_GROUP_ORDER = ["Papers", "Model Labs", "Engineering Blogs", "AI News", "Tech Media", "Post", "General"];
 
 function statusClass(status: string) {
   if (status === "ready") return "badge good";
@@ -119,6 +119,15 @@ function sourceIdsForItemsQuery(sourceRows: Source[], sourceParams: string[], le
   return sourceRows.map((source) => source.id);
 }
 
+function sourceGroupName(source: Source) {
+  return source.group || CONTENT_TYPE_LABELS[source.content_type] || "General";
+}
+
+function sourceGroupRank(groupName: string) {
+  const index = SOURCE_GROUP_ORDER.indexOf(groupName);
+  return index === -1 ? SOURCE_GROUP_ORDER.length : index;
+}
+
 function itemQueryFromFilters(searchParams: URLSearchParams, sourceRows: Source[]) {
   const next = new URLSearchParams(searchParams.toString());
   const sourceParams = next.getAll("source_id");
@@ -154,7 +163,7 @@ function FeedView() {
   const sourceGroups = useMemo(() => {
     const groups = new Map<string, { groupName: string; sources: Source[] }>();
     for (const source of sources) {
-      const groupName = source.content_type || "other";
+      const groupName = sourceGroupName(source);
       const group = groups.get(groupName) || { groupName, sources: [] };
       group.sources.push(source);
       groups.set(groupName, group);
@@ -165,11 +174,7 @@ function FeedView() {
         sources: group.sources.sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name)),
       }))
       .sort((a, b) => {
-        const aIndex = CONTENT_TYPES.indexOf(a.groupName as (typeof CONTENT_TYPES)[number]);
-        const bIndex = CONTENT_TYPES.indexOf(b.groupName as (typeof CONTENT_TYPES)[number]);
-        const normalizedA = aIndex === -1 ? CONTENT_TYPES.length : aIndex;
-        const normalizedB = bIndex === -1 ? CONTENT_TYPES.length : bIndex;
-        return normalizedA - normalizedB || a.groupName.localeCompare(b.groupName);
+        return sourceGroupRank(a.groupName) - sourceGroupRank(b.groupName) || a.groupName.localeCompare(b.groupName);
       });
   }, [sources]);
 
@@ -338,7 +343,7 @@ function FeedView() {
                       <span className={allSelected ? "checkBox checked" : "checkBox"} aria-hidden="true">
                         {allSelected && <Check size={14} />}
                       </span>
-                      <span>{CONTENT_TYPE_LABELS[group.groupName] || group.groupName}</span>
+                      <span>{group.groupName}</span>
                     </label>
                     <div className="sourceTypeActions">
                       <span className={noneSelected ? "badge warn" : "badge"}>{selectedCount}/{group.sources.length}</span>

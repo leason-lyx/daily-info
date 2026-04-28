@@ -1,6 +1,4 @@
 version: 1
-retired_source_ids:
-  - arxiv-cs-cl
 sources:
   - id: arxiv-cs-ai
     name: arXiv cs.AI
@@ -14,6 +12,21 @@ sources:
     attempts:
       - adapter: feed
         url: https://export.arxiv.org/api/query?search_query=cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=50
+    fulltext:
+      strategy: feed_field
+    stability_level: stable
+  - id: arxiv-cs-cl
+    name: arXiv cs.CL
+    content_type: paper
+    platform: arxiv
+    homepage_url: https://arxiv.org/list/cs.CL/recent
+    group: Papers
+    default_tags:
+      - paper
+      - nlp
+    attempts:
+      - adapter: feed
+        url: https://export.arxiv.org/api/query?search_query=cat:cs.CL&sortBy=submittedDate&sortOrder=descending&max_results=50
     fulltext:
       strategy: feed_field
     stability_level: stable
@@ -128,6 +141,41 @@ sources:
       min_feed_fulltext_chars: 1200
       max_fulltext_per_run: 20
     stability_level: stable
+  - id: google-ai-blog
+    name: Google AI Blog
+    content_type: blog
+    platform: google
+    homepage_url: https://blog.google/technology/ai/
+    group: Model Labs
+    default_tags:
+      - google
+      - ai
+    attempts:
+      - adapter: feed
+        url: https://blog.google/innovation-and-ai/technology/ai/rss/
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
+  - id: google-deepmind-blog
+    name: Google DeepMind Blog
+    content_type: blog
+    platform: google-deepmind
+    homepage_url: https://blog.google/technology/google-deepmind/
+    group: Model Labs
+    default_tags:
+      - google
+      - deepmind
+      - research
+    attempts:
+      - adapter: feed
+        url: https://blog.google/innovation-and-ai/models-and-research/google-deepmind/rss/
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
   - id: huggingface-blog
     name: Hugging Face Blog
     content_type: blog
@@ -139,6 +187,125 @@ sources:
     attempts:
       - adapter: feed
         url: https://huggingface.co/blog/feed.xml
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
+  - id: nvidia-blog
+    name: NVIDIA Blog
+    content_type: blog
+    platform: nvidia
+    homepage_url: https://blogs.nvidia.com/
+    group: Engineering Blogs
+    default_tags:
+      - nvidia
+      - ai
+    attempts:
+      - adapter: feed
+        url: https://blogs.nvidia.com/feed/
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
+  - id: mit-technology-review-ai
+    name: MIT Technology Review AI
+    content_type: blog
+    platform: mit-technology-review
+    homepage_url: https://www.technologyreview.com/topic/artificial-intelligence/
+    group: Tech Media
+    default_tags:
+      - media
+      - ai
+    attempts:
+      - adapter: feed
+        url: https://www.technologyreview.com/topic/artificial-intelligence/feed/
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
+  - id: the-verge-tech
+    name: The Verge Tech
+    content_type: blog
+    platform: the-verge
+    homepage_url: https://www.theverge.com/tech
+    group: Tech Media
+    default_tags:
+      - media
+      - tech
+    attempts:
+      - adapter: feed
+        url: https://www.theverge.com/rss/tech/index.xml
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
+  - id: techcrunch-ai
+    name: TechCrunch AI
+    content_type: blog
+    platform: techcrunch
+    homepage_url: https://techcrunch.com/category/artificial-intelligence/
+    group: Tech Media
+    default_tags:
+      - media
+      - ai
+    attempts:
+      - adapter: feed
+        url: https://techcrunch.com/category/artificial-intelligence/feed/
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
+  - id: ars-technica-ai
+    name: Ars Technica AI
+    content_type: blog
+    platform: ars-technica
+    homepage_url: https://arstechnica.com/ai/
+    group: Tech Media
+    default_tags:
+      - media
+      - ai
+    attempts:
+      - adapter: feed
+        url: https://arstechnica.com/ai/feed/
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
+  - id: wired-ai
+    name: WIRED AI
+    content_type: blog
+    platform: wired
+    homepage_url: https://www.wired.com/tag/artificial-intelligence/
+    group: Tech Media
+    default_tags:
+      - media
+      - ai
+    attempts:
+      - adapter: feed
+        url: https://www.wired.com/feed/tag/ai/latest/rss
+    fulltext:
+      strategy: feed_or_detail
+      min_feed_fulltext_chars: 1200
+      max_fulltext_per_run: 20
+    stability_level: stable
+  - id: 404-media
+    name: 404 Media
+    content_type: blog
+    platform: 404-media
+    homepage_url: https://www.404media.co/
+    group: Tech Media
+    default_tags:
+      - media
+      - tech
+    attempts:
+      - adapter: feed
+        url: https://www.404media.co/rss/
     fulltext:
       strategy: feed_or_detail
       min_feed_fulltext_chars: 1200
