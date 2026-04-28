@@ -860,7 +860,13 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
             if fulltext_limit and fulltext_attempts >= fulltext_limit:
                 continue
             fulltext_attempts += 1
-            text, error = await extract_generic_article(item.url)
+            item_id = item.id
+            item_url = item.url
+            db.commit()
+            text, error = await extract_generic_article(item_url)
+            item = db.get(Item, item_id)
+            if not item:
+                continue
             db.add(Fulltext(item_id=item.id, extractor="generic_article", status="failed" if error else "succeeded", text=text, error_message=error))
             if text:
                 item.raw_text = text

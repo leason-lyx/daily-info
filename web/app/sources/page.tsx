@@ -28,11 +28,27 @@ type SourceEditForm = {
 export default function SourcesPage() {
   const [sources, setSources] = useState<Source[]>([]);
   const [message, setMessage] = useState("");
-  const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [pendingActions, setPendingActions] = useState<Set<string>>(() => new Set());
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<SourceEditForm | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
+
+  function isPending(actionId: string) {
+    return pendingActions.has(actionId);
+  }
+
+  function startPending(actionId: string) {
+    setPendingActions((current) => new Set(current).add(actionId));
+  }
+
+  function finishPending(actionId: string) {
+    setPendingActions((current) => {
+      const next = new Set(current);
+      next.delete(actionId);
+      return next;
+    });
+  }
 
   async function reload() {
     try {
@@ -58,7 +74,7 @@ export default function SourcesPage() {
 
   async function toggle(source: Source) {
     const actionId = `${source.id}:toggle`;
-    setPendingAction(actionId);
+    startPending(actionId);
     setMessage("");
     try {
       const updated = await api.patchSource(source.id, { enabled: !source.enabled });
@@ -67,32 +83,36 @@ export default function SourcesPage() {
     } catch (err) {
       setMessage(`Could not update ${source.name}: ${errorMessage(err)}`);
     } finally {
-      setPendingAction(null);
+      finishPending(actionId);
     }
   }
 
   async function fetchNow(source: Source) {
     const actionId = `${source.id}:fetch`;
     const previousRunId = source.latest_run?.id;
-    setPendingAction(actionId);
+    startPending(actionId);
     setMessage("");
     try {
       const result = await api.fetchSource(source.id);
       setMessage(`Queued ${source.name} fetch job ${result.job_id}.`);
       await reload();
-      await pollSourceUntilSettled(source.id, previousRunId);
+      await pollFetchUntilSettled(result.job_id, source.id, previousRunId);
     } catch (err) {
       setMessage(`Could not fetch ${source.name}: ${errorMessage(err)}`);
     } finally {
-      setPendingAction(null);
+      finishPending(actionId);
     }
   }
 
-  async function pollSourceUntilSettled(sourceId: string, previousRunId: unknown) {
-    for (let i = 0; i < 15; i += 1) {
+  async function pollFetchUntilSettled(jobId: number, sourceId: string, previousRunId: unknown) {
+    for (let i = 0; i < 150; i += 1) {
       await delay(2000);
-      const nextSources = await api.getSources();
+      const [nextSources, health] = await Promise.all([api.getSources(), api.health()]);
       setSources(nextSources);
+      const activeJob = health.jobs?.active?.find((job) => job.id === jobId);
+      if (activeJob) continue;
+      const recentJob = health.jobs?.recent?.find((job) => job.id === jobId);
+      if (recentJob && !["queued", "running", "retrying"].includes(String(recentJob.status))) return;
       const current = nextSources.find((item) => item.id === sourceId);
       const run = current?.latest_run;
       if (!run) continue;
@@ -103,7 +123,8 @@ export default function SourcesPage() {
   }
 
   async function exportPack() {
-    setPendingAction("export");
+    const actionId = "export";
+    startPending(actionId);
     setMessage("");
     try {
       const text = await api.exportSources();
@@ -111,7 +132,7 @@ export default function SourcesPage() {
     } catch (err) {
       setMessage(`Could not export sources: ${errorMessage(err)}`);
     } finally {
-      setPendingAction(null);
+      finishPending(actionId);
     }
   }
 
@@ -147,7 +168,8 @@ export default function SourcesPage() {
 
   async function saveEdit(source: Source) {
     if (!editForm) return;
-    setPendingAction(`${source.id}:edit`);
+    const actionId = `${source.id}:edit`;
+    startPending(actionId);
     setMessage("");
     try {
       const attempts = parseAttempts(editForm.attempts_json);
@@ -178,12 +200,13 @@ export default function SourcesPage() {
     } catch (err) {
       setMessage(`Could not save ${source.name}: ${errorMessage(err)}`);
     } finally {
-      setPendingAction(null);
+      finishPending(actionId);
     }
   }
 
   async function importPack() {
-    setPendingAction("import");
+    const actionId = "import";
+    startPending(actionId);
     setMessage("");
     try {
       const result = await api.importSources(importText);
@@ -194,7 +217,7 @@ export default function SourcesPage() {
     } catch (err) {
       setMessage(`Could not import sources: ${errorMessage(err)}`);
     } finally {
-      setPendingAction(null);
+      finishPending(actionId);
     }
   }
 
@@ -214,7 +237,7 @@ export default function SourcesPage() {
           <button className="button" onClick={reload}>
             <RefreshCcw size={16} /> Refresh
           </button>
-          <button className="button" onClick={exportPack} disabled={pendingAction === "export"}>
+          <button className="button" onClick={exportPack} disabled={isPending("export")}>
             <Download size={16} /> Export
           </button>
         </div>
@@ -226,7 +249,7 @@ export default function SourcesPage() {
             <textarea id="source-pack-yaml" value={importText} onChange={(event) => setImportText(event.target.value)} placeholder="version: 1&#10;sources: []" />
           </div>
           <div className="actions">
-            <button className="button primary" onClick={importPack} disabled={pendingAction === "import" || !importText.trim()}>
+            <button className="button primary" onClick={importPack} disabled={isPending("import") || !importText.trim()}>
               <Upload size={16} /> Import
             </button>
             <button className="button" onClick={() => setImportOpen(false)}>
@@ -252,18 +275,18 @@ export default function SourcesPage() {
                 aria-label={`Toggle ${source.name} source status. Currently ${source.enabled ? "enabled" : "disabled"}.`}
                 aria-pressed={source.enabled}
                 onClick={() => toggle(source)}
-                disabled={pendingAction === `${source.id}:toggle`}
+                disabled={isPending(`${source.id}:toggle`)}
               >
                 <span className="switchKnob" aria-hidden="true" />
                 <span className="switchText">
-                  {pendingAction === `${source.id}:toggle` ? "saving" : source.enabled ? "enabled" : "disabled"}
+                  {isPending(`${source.id}:toggle`) ? "saving" : source.enabled ? "enabled" : "disabled"}
                 </span>
               </button>
-              <button className="button compact" title="Fetch now" onClick={() => fetchNow(source)} disabled={pendingAction === `${source.id}:fetch`}>
+              <button className="button compact" title="Fetch now" onClick={() => fetchNow(source)} disabled={isPending(`${source.id}:fetch`)}>
                 <Play size={16} />
-                {pendingAction === `${source.id}:fetch` ? "Queueing..." : "Fetch now"}
+                {isPending(`${source.id}:fetch`) ? "Queueing..." : "Fetch now"}
               </button>
-              <button className="button compact" title="Edit source" onClick={() => startEdit(source)} disabled={pendingAction === `${source.id}:edit`}>
+              <button className="button compact" title="Edit source" onClick={() => startEdit(source)} disabled={isPending(`${source.id}:edit`)}>
                 <Edit3 size={16} /> Edit
               </button>
             </div>
@@ -321,7 +344,7 @@ export default function SourcesPage() {
                   </div>
                 </div>
                 <div className="actions">
-                  <button className="button primary" onClick={() => saveEdit(source)} disabled={pendingAction === `${source.id}:edit`}>
+                  <button className="button primary" onClick={() => saveEdit(source)} disabled={isPending(`${source.id}:edit`)}>
                     <Save size={16} /> Save
                   </button>
                   <button className="button" onClick={cancelEdit}>
