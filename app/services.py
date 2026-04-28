@@ -6,7 +6,7 @@ import yaml
 from sqlalchemy import Select, and_, delete, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.catalog import ARXIV_CS_AI_API_URL, ARXIV_CS_SE_API_URL, DEFAULT_SOURCE_PACK_PATH
+from app.catalog import ARXIV_CS_AI_API_URL, ARXIV_CS_CL_API_URL, ARXIV_CS_SE_API_URL, DEFAULT_SOURCE_PACK_PATH
 from app.config import Settings
 from app.fulltext import extract_generic_article, strip_html
 from app.config import get_settings
@@ -264,6 +264,13 @@ def sync_known_builtin_source(db: Session, source: Source, builtin: SourceIn) ->
         source.fulltext = dumps(builtin.fulltext)
         source.homepage_url = builtin.homepage_url
         source.stability_level = builtin.stability_level
+    if source.id == "arxiv-cs-cl" and _has_legacy_arxiv_cs_cl_attempt(source):
+        source.attempts.clear()
+        db.flush()
+        source.attempts = [attempt_model(attempt) for attempt in builtin.attempts]
+        source.fulltext = dumps(builtin.fulltext)
+        source.homepage_url = builtin.homepage_url
+        source.stability_level = builtin.stability_level
     current_fulltext = loads(source.fulltext, {})
     if _should_sync_builtin_fulltext(source.id, current_fulltext):
         source.fulltext = dumps(builtin.fulltext)
@@ -297,8 +304,33 @@ def _has_legacy_arxiv_cs_ai_attempt(source: Source) -> bool:
     )
 
 
+def _has_legacy_arxiv_cs_cl_attempt(source: Source) -> bool:
+    return any(
+        attempt.adapter == "feed"
+        and attempt.url == "https://rss.arxiv.org/rss/cs.CL"
+        and attempt.url != ARXIV_CS_CL_API_URL
+        for attempt in source.attempts
+    )
+
+
 def _should_sync_builtin_fulltext(source_id: str, current: dict[str, Any]) -> bool:
-    if source_id in {"openai-research", "anthropic-news", "anthropic-research", "anthropic-engineering", "huggingface-blog"}:
+    feed_or_detail_sources = {
+        "openai-research",
+        "anthropic-news",
+        "anthropic-research",
+        "anthropic-engineering",
+        "google-ai-blog",
+        "google-deepmind-blog",
+        "huggingface-blog",
+        "nvidia-blog",
+        "mit-technology-review-ai",
+        "the-verge-tech",
+        "techcrunch-ai",
+        "ars-technica-ai",
+        "wired-ai",
+        "404-media",
+    }
+    if source_id in feed_or_detail_sources:
         return current.get("strategy") in {None, "feed_field"}
     if source_id == "openai-news":
         return current.get("strategy") == "generic_article" and "max_fulltext_per_run" not in current
