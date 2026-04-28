@@ -6,8 +6,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL:-sqlite:////data/daily-info.db}
-    ports:
-      - "8000:8000"
+    network_mode: host
     volumes:
       - daily_info_data:/data
     healthcheck:
@@ -22,6 +21,7 @@ services:
       context: .
       dockerfile: Dockerfile.api
     env_file: .env
+    network_mode: host
     command: ["python", "-m", "app.worker"]
     volumes:
       - daily_info_data:/data
@@ -34,6 +34,7 @@ services:
       context: .
       dockerfile: Dockerfile.api
     env_file: .env
+    network_mode: host
     command: ["python", "-m", "app.scheduler"]
     volumes:
       - daily_info_data:/data
