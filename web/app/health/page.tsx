@@ -1,12 +1,30 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { RefreshCcw } from "lucide-react";
+import type { ReactNode } from "react";
+import { ChevronDown, ChevronUp, RefreshCcw } from "lucide-react";
 import { api, Health, HealthJob, LlmUsage } from "@/lib/api";
+
+const SECTION_LIMITS = {
+  jobQueue: 5,
+  recentJobs: 5,
+  sourceHealth: 6,
+  recentSourceErrors: 3,
+} as const;
+
+type ExpandableHealthSection = keyof typeof SECTION_LIMITS;
+
+const defaultExpandedSections: Record<ExpandableHealthSection, boolean> = {
+  jobQueue: false,
+  recentJobs: false,
+  sourceHealth: false,
+  recentSourceErrors: false,
+};
 
 export default function HealthPage() {
   const [health, setHealth] = useState<Health>({});
   const [error, setError] = useState("");
+  const [expandedSections, setExpandedSections] = useState(defaultExpandedSections);
 
   function reload() {
     api.health().then((data) => setHealth(data as Health)).catch((err: Error) => setError(err.message));
@@ -18,9 +36,18 @@ export default function HealthPage() {
   const jobCounts = health.jobs?.counts;
   const activeJobs = health.jobs?.active || [];
   const recentJobs = health.jobs?.recent || [];
+  const sources = health.sources || [];
+  const recentSourceErrors = health.recent_errors || [];
+  const visibleActiveJobs = expandedSections.jobQueue ? activeJobs : activeJobs.slice(0, SECTION_LIMITS.jobQueue);
+  const visibleRecentJobs = expandedSections.recentJobs ? recentJobs : recentJobs.slice(0, SECTION_LIMITS.recentJobs);
+  const visibleSources = expandedSections.sourceHealth ? sources : sources.slice(0, SECTION_LIMITS.sourceHealth);
+
+  function toggleSection(section: ExpandableHealthSection) {
+    setExpandedSections((current) => ({ ...current, [section]: !current[section] }));
+  }
 
   return (
-    <div>
+    <div className="healthPage">
       <header className="pageHead">
         <div>
           <h1>Health</h1>
@@ -29,146 +56,230 @@ export default function HealthPage() {
           <RefreshCcw size={16} />
         </button>
       </header>
-      {error && <div className="empty">{error}</div>}
-      <section className="grid3">
-        <div className="metricRow">
-          <div>
-            <span className="subtle">Items</span>
-            <h2>{health.items_total ?? 0}</h2>
-            <span className="subtle">{health.items_24h ?? 0} in 24h</span>
+      {error && <div className="healthEmpty">{error}</div>}
+      <section className="healthOverview" aria-label="Health overview">
+        <div className="healthMetric">
+          <span className="healthEyebrow">Items</span>
+          <strong className="healthMetricValue">{formatCount(health.items_total)}</strong>
+          <div className="healthMetricMeta">{formatCount(health.items_24h)} in 24h</div>
+        </div>
+        <div className="healthMetric">
+          <span className="healthEyebrow">Jobs</span>
+          <div className="healthMetricValue">
+            <strong>{formatCount(jobCounts?.queued)}</strong>
+            <span>queued</span>
+          </div>
+          <div className="healthMetricMeta">
+            <span>{formatCount(jobCounts?.running)} running</span>
+            <span>{formatCount(jobCounts?.retrying)} retrying</span>
+            <span>{formatCount(jobCounts?.failed)} failed</span>
           </div>
         </div>
-        <div className="metricRow">
-          <div>
-            <span className="subtle">Jobs</span>
-            <h2>{jobCounts?.queued ?? 0} queued</h2>
-            <div className="meta" style={{ marginTop: 8 }}>
-              <span>{jobCounts?.running ?? 0} running</span>
-              <span>{jobCounts?.retrying ?? 0} retrying</span>
-              <span>{jobCounts?.failed ?? 0} failed</span>
-            </div>
-          </div>
-        </div>
-        <div className="metricRow">
-          <div>
-            <span className="subtle">AI Provider</span>
-            <h2>{String(health.ai_provider?.type ?? "none")}</h2>
+        <div className="healthMetric">
+          <span className="healthEyebrow">AI Provider</span>
+          <div className="healthProviderLine">
+            <strong className="healthMetricValue">{String(health.ai_provider?.type ?? "none")}</strong>
             <span className={providerAvailable ? "badge good" : health.ai_provider?.configured ? "badge warn" : "badge"}>
               {providerAvailable ? "available" : health.ai_provider?.configured ? "configured" : "not configured"}
             </span>
-            {health.ai_provider?.last_error ? <span className="sourceError">{String(health.ai_provider.last_error)}</span> : null}
-            {llmUsage?.all_time ? (
-              <div className="meta" style={{ marginTop: 8 }}>
-                <span>{formatCount(llmUsage.all_time.requests)} custom calls</span>
-                <span>{formatCount(llmUsage.all_time.total_tokens)} tokens</span>
-                <span>{formatCount(llmUsage.recent_24h?.total_tokens)} tokens 24h</span>
-              </div>
-            ) : null}
           </div>
+          {health.ai_provider?.last_error ? <span className="sourceError">{String(health.ai_provider.last_error)}</span> : null}
+          {llmUsage?.all_time ? (
+            <div className="healthMetricMeta">
+              <span>{formatCount(llmUsage.all_time.requests)} custom calls</span>
+              <span>{formatCount(llmUsage.all_time.total_tokens)} tokens</span>
+              <span>{formatCount(llmUsage.recent_24h?.total_tokens)} tokens 24h</span>
+            </div>
+          ) : null}
         </div>
       </section>
-      <section className="panel stack healthBlock" style={{ marginTop: 16 }}>
-        <div className="row">
-          <div>
-            <h2>Job Queue</h2>
-          </div>
-          <span className="badge">{activeJobs.length} active</span>
-        </div>
+
+      <HealthSection
+        title="Job Queue"
+        meta={sectionCountLabel(visibleActiveJobs.length, activeJobs.length, "active")}
+        totalCount={activeJobs.length}
+        visibleCount={visibleActiveJobs.length}
+        expanded={expandedSections.jobQueue}
+        onToggle={() => toggleSection("jobQueue")}
+        actionLabel={expandedSections.jobQueue ? "Show less" : `Show all ${activeJobs.length}`}
+      >
         {activeJobs.length ? (
-          <div className="stack">
-            {activeJobs.map((job) => (
+          <div className="healthList">
+            {visibleActiveJobs.map((job) => (
               <JobRow key={job.id} job={job} />
             ))}
           </div>
         ) : (
-          <div className="empty">No queued or running jobs.</div>
+          <div className="healthEmpty">No queued or running jobs.</div>
         )}
-      </section>
-      <section className="panel stack healthBlock" style={{ marginTop: 16 }}>
-        <div className="row">
-          <div>
-            <h2>Recent jobs</h2>
-          </div>
-          <span className="badge">{recentJobs.length} recent</span>
-        </div>
+      </HealthSection>
+
+      <HealthSection
+        title="Recent jobs"
+        meta={sectionCountLabel(visibleRecentJobs.length, recentJobs.length, "recent")}
+        totalCount={recentJobs.length}
+        visibleCount={visibleRecentJobs.length}
+        expanded={expandedSections.recentJobs}
+        onToggle={() => toggleSection("recentJobs")}
+        actionLabel={expandedSections.recentJobs ? "Show less" : `Show all ${recentJobs.length}`}
+      >
         {recentJobs.length ? (
-          <div className="stack">
-            {recentJobs.map((job) => (
+          <div className="healthList">
+            {visibleRecentJobs.map((job) => (
               <JobRow key={job.id} job={job} />
             ))}
           </div>
         ) : (
-          <div className="empty">No completed jobs yet.</div>
+          <div className="healthEmpty">No completed jobs yet.</div>
         )}
-      </section>
+      </HealthSection>
+
       {!!health.degraded_sources?.length && (
-        <section className="panel stack healthBlock">
-          <h2>Degraded sources</h2>
-          <div className="meta">
+        <HealthSection title="Degraded sources" meta={`${health.degraded_sources.length} needs attention`}>
+          <div className="healthAlertList">
             {health.degraded_sources.map((source) => (
-              <span className="badge bad" key={String(source.id)}>
-                {String(source.name || source.id)}: {String(source.reason)}
+              <span className="healthAlertItem" key={String(source.id)}>
+                <strong>{String(source.name || source.id)}</strong>
+                <span>{String(source.reason)}</span>
               </span>
             ))}
           </div>
-        </section>
+        </HealthSection>
       )}
-      <section className="stack" style={{ marginTop: 16 }}>
-        {(health.sources || []).map((source) => {
-          const latest = source.latest_run;
-          const contentAudit = source.content_audit;
-          return (
-            <article className="sourceRow" key={String(source.id)}>
-              <div>
-                <h2>{String(source.name)}</h2>
-                <div className="meta">
-                  <span>{String(source.id)}</span>
-                  <span>{source.enabled ? "enabled" : "disabled"}</span>
-                  <span>{source.auto_summary_enabled ? `auto summary ${source.auto_summary_days || 7}d` : "auto summary off"}</span>
-                  <span>latest success {formatDate(source.latest_success_at)}</span>
-                  <span>raw {String(source.raw_count ?? 0)}</span>
-                  <span>items {String(source.item_count ?? 0)}</span>
-                  <span>fulltext {formatRate(source.fulltext_success_rate)}</span>
-                  <span>summary ready {String(source.summary_ready_count ?? 0)}</span>
-                  <span>summary failed {String(source.summary_failed_count ?? 0)}</span>
-                  <span>summary fail {formatRate(source.summary_failure_rate)}</span>
-                  <span>failures {String(source.consecutive_failures ?? 0)}</span>
-                  <span>empty {String(source.consecutive_empty ?? 0)}</span>
-                  <span>{String(contentAudit?.status ?? "unknown")}</span>
+
+      <HealthSection
+        title="Source health"
+        meta={sectionCountLabel(visibleSources.length, sources.length, "sources")}
+        totalCount={sources.length}
+        visibleCount={visibleSources.length}
+        expanded={expandedSections.sourceHealth}
+        onToggle={() => toggleSection("sourceHealth")}
+        actionLabel={expandedSections.sourceHealth ? "Show less" : `Show all ${sources.length}`}
+      >
+        <div className="healthList">
+          {visibleSources.map((source) => {
+            const latest = source.latest_run;
+            const contentAudit = source.content_audit;
+            return (
+              <article className="healthListRow" key={String(source.id)}>
+                <div className="healthRowMain">
+                  <h3 className="healthRowTitle">{String(source.name)}</h3>
+                  <div className="healthMeta">
+                    <span>{String(source.id)}</span>
+                    <span>{source.enabled ? "enabled" : "disabled"}</span>
+                    <span>{source.auto_summary_enabled ? `auto summary ${source.auto_summary_days || 7}d` : "auto summary off"}</span>
+                    <span>latest success {formatDate(source.latest_success_at)}</span>
+                    <span>raw {String(source.raw_count ?? 0)}</span>
+                    <span>items {String(source.item_count ?? 0)}</span>
+                    <span>fulltext {formatRate(source.fulltext_success_rate)}</span>
+                    <span>summary ready {String(source.summary_ready_count ?? 0)}</span>
+                    <span>summary failed {String(source.summary_failed_count ?? 0)}</span>
+                    <span>summary fail {formatRate(source.summary_failure_rate)}</span>
+                    <span>failures {String(source.consecutive_failures ?? 0)}</span>
+                    <span>empty {String(source.consecutive_empty ?? 0)}</span>
+                    <span>{String(contentAudit?.status ?? "unknown")}</span>
+                  </div>
+                  {latest?.error_message ? <span className="subtle">{String(latest.error_message)}</span> : null}
                 </div>
-                {latest?.error_message ? <span className="subtle">{String(latest.error_message)}</span> : null}
-              </div>
-              <span className={latest?.status === "failed" ? "badge bad" : latest?.status === "succeeded" ? "badge good" : "badge"}>
-                {String(latest?.status || "never")}
-              </span>
-            </article>
-          );
-        })}
-      </section>
-      <ErrorList title="Recent source errors" rows={health.recent_errors} />
+                <span className={latest?.status === "failed" ? "badge bad" : latest?.status === "succeeded" ? "badge good" : "badge"}>
+                  {String(latest?.status || "never")}
+                </span>
+              </article>
+            );
+          })}
+        </div>
+      </HealthSection>
+
+      <ErrorList
+        title="Recent source errors"
+        rows={recentSourceErrors}
+        limit={SECTION_LIMITS.recentSourceErrors}
+        expanded={expandedSections.recentSourceErrors}
+        onToggle={() => toggleSection("recentSourceErrors")}
+      />
       <ErrorList title="Recent summary errors" rows={health.recent_summary_errors} />
     </div>
   );
 }
 
-function ErrorList({ title, rows }: { title: string; rows?: Array<Record<string, unknown>> }) {
-  if (!rows?.length) return null;
+function HealthSection({
+  title,
+  meta,
+  children,
+  totalCount,
+  visibleCount,
+  expanded = false,
+  onToggle,
+  actionLabel,
+}: {
+  title: string;
+  meta: string;
+  children: ReactNode;
+  totalCount?: number;
+  visibleCount?: number;
+  expanded?: boolean;
+  onToggle?: () => void;
+  actionLabel?: string;
+}) {
+  const canToggle = Boolean(onToggle && totalCount !== undefined && visibleCount !== undefined && (expanded || totalCount > visibleCount));
+  const ToggleIcon = expanded ? ChevronUp : ChevronDown;
   return (
-    <section className="panel stack healthBlock">
-      <div className="row">
-        <h2>{title}</h2>
-        <span className="badge bad">{rows.length} recent</span>
+    <section className="healthSection">
+      <div className="healthSectionHead">
+        <div className="healthSectionTitle">
+          <span className="healthSectionAccent" aria-hidden="true" />
+          <h2>{title}</h2>
+        </div>
+        <div className="healthSectionTools">
+          <span className="healthSectionMeta">{meta}</span>
+          {canToggle ? (
+            <button className="healthSectionAction" type="button" onClick={onToggle} aria-expanded={expanded}>
+              {actionLabel || (expanded ? "Show less" : "Show all")}
+              <ToggleIcon size={14} />
+            </button>
+          ) : null}
+        </div>
       </div>
-      <div className="stack">
-        {rows.map((row, index) => {
+      {children}
+    </section>
+  );
+}
+
+function ErrorList({
+  title,
+  rows,
+  limit,
+  expanded = false,
+  onToggle,
+}: {
+  title: string;
+  rows?: Array<Record<string, unknown>>;
+  limit?: number;
+  expanded?: boolean;
+  onToggle?: () => void;
+}) {
+  if (!rows?.length) return null;
+  const visibleRows = limit && !expanded ? rows.slice(0, limit) : rows;
+  return (
+    <HealthSection
+      title={title}
+      meta={limit ? sectionCountLabel(visibleRows.length, rows.length, "recent") : `${rows.length} recent`}
+      totalCount={limit ? rows.length : undefined}
+      visibleCount={limit ? visibleRows.length : undefined}
+      expanded={expanded}
+      onToggle={onToggle}
+      actionLabel={expanded ? "Show less" : `Show all ${rows.length}`}
+    >
+      <div className="healthList">
+        {visibleRows.map((row, index) => {
           const label = String(row.title || row.source_id || row.item_id || `Error ${index + 1}`);
           const code = typeof row.error_code === "string" && row.error_code ? row.error_code : "failed";
           const timestamp = typeof row.finished_at === "string" ? row.finished_at : typeof row.created_at === "string" ? row.created_at : "";
           return (
-            <article className="sourceRow" key={`${label}-${index}`}>
-              <div>
-                <h2>{label}</h2>
-                <div className="meta">
+            <article className="healthListRow" key={`${label}-${index}`}>
+              <div className="healthRowMain">
+                <h3 className="healthRowTitle">{label}</h3>
+                <div className="healthMeta">
                   {row.source_id ? <span>{String(row.source_id)}</span> : null}
                   {row.provider ? <span>{String(row.provider)}</span> : null}
                   {row.model ? <span>{String(row.model)}</span> : null}
@@ -181,19 +292,24 @@ function ErrorList({ title, rows }: { title: string; rows?: Array<Record<string,
           );
         })}
       </div>
-    </section>
+    </HealthSection>
   );
+}
+
+function sectionCountLabel(visibleCount: number, totalCount: number, label: string) {
+  if (totalCount > visibleCount) return `${visibleCount} of ${totalCount} ${label}`;
+  return `${totalCount} ${label}`;
 }
 
 function JobRow({ job }: { job: HealthJob }) {
   return (
-    <article className="sourceRow">
-      <div>
-        <div className="row">
-          <h2>{job.type}</h2>
+    <article className="healthListRow">
+      <div className="healthRowMain">
+        <div className="healthRowTitleLine">
+          <h3 className="healthRowTitle">{job.type}</h3>
           <span className="subtle">#{job.id}</span>
         </div>
-        <div className="meta">
+        <div className="healthMeta">
           <span>{job.target.label}</span>
           <span>{job.target.kind}</span>
           <span>{jobProgressLabel(job.status)}</span>
