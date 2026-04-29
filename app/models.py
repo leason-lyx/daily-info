@@ -265,11 +265,15 @@ class LLMProvider(Base):
     __tablename__ = "llm_providers"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(120), default="Custom API")
     provider_type: Mapped[str] = mapped_column(String(80), default="none")
     base_url: Mapped[str] = mapped_column(Text, default="")
+    api_key: Mapped[str] = mapped_column(Text, default="")
     model_name: Mapped[str] = mapped_column(String(120), default="")
     temperature: Mapped[str] = mapped_column(String(20), default="0.2")
     timeout: Mapped[int] = mapped_column(Integer, default=60)
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

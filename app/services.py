@@ -10,7 +10,7 @@ from app.catalog import ARXIV_CS_AI_API_URL, ARXIV_CS_CL_API_URL, ARXIV_CS_SE_AP
 from app.config import Settings
 from app.fulltext import extract_generic_article, strip_html
 from app.config import get_settings
-from app.models import Fulltext, Item, Job, JobStatus, RawEntry, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
+from app.models import Fulltext, Item, Job, JobStatus, LLMProvider, RawEntry, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
 from app.schemas import ItemOut, SourceAttemptIn, SourceAttemptOut, SourceDefinitionIn, SourceDefinitionOut, SourceOut, SourcePatch, SourceRuntimeOut, SourceIn
 from app.source_catalog import definition_from_source, sync_source_catalog, upsert_source_definition
 from app.subscriptions import subscribed_source_ids
@@ -171,7 +171,122 @@ def load_runtime_settings(db: Session) -> Settings:
             continue
         value = loads(row.value, None)
         overrides[row.key] = value
-    return get_settings().model_copy(update={k: v for k, v in overrides.items() if v is not None})
+    settings = get_settings().model_copy(update={k: v for k, v in overrides.items() if v is not None})
+    if settings.llm_provider_type == "openai_compatible":
+        providers = list_llm_providers(db)
+        primary = next((provider for provider in providers if provider.enabled and _provider_configured(provider)), None)
+        if primary:
+            settings = settings.model_copy(
+                update={
+                    "llm_base_url": primary.base_url,
+                    "llm_api_key": primary.api_key,
+                    "llm_model_name": primary.model_name,
+                    "llm_temperature": _provider_temperature(primary),
+                    "llm_timeout": primary.timeout,
+                }
+            )
+        elif providers or _settings_flag(db, "llm_providers_initialized"):
+            settings = settings.model_copy(update={"llm_base_url": None, "llm_api_key": None, "llm_model_name": None})
+    return settings
+
+
+def _settings_flag(db: Session, key: str) -> bool:
+    row = db.get(Setting, key)
+    return bool(row and loads(row.value, False))
+
+
+def set_setting_value(db: Session, key: str, value: Any) -> None:
+    stored = db.get(Setting, key)
+    if not stored:
+        stored = Setting(key=key)
+        db.add(stored)
+    stored.value = dumps(value)
+
+
+def list_llm_providers(db: Session) -> list[LLMProvider]:
+    return list(
+        db.execute(
+            select(LLMProvider)
+            .where(LLMProvider.provider_type == "openai_compatible")
+            .order_by(LLMProvider.priority, LLMProvider.id)
+        ).scalars()
+    )
+
+
+def _provider_configured(provider: LLMProvider) -> bool:
+    return bool(provider.base_url.strip() and provider.api_key.strip() and provider.model_name.strip())
+
+
+def _provider_temperature(provider: LLMProvider) -> float:
+    try:
+        return float(provider.temperature)
+    except (TypeError, ValueError):
+        return 0.2
+
+
+def ensure_legacy_llm_provider(db: Session, settings: Settings | None = None) -> bool:
+    settings = settings or get_settings()
+    if list_llm_providers(db) or _settings_flag(db, "llm_providers_initialized"):
+        return False
+    if settings.llm_provider_type != "openai_compatible":
+        return False
+    if not any([settings.llm_base_url, settings.llm_api_key, settings.llm_model_name]):
+        return False
+    provider = LLMProvider(
+        name="Default API",
+        provider_type="openai_compatible",
+        base_url=settings.llm_base_url or "",
+        api_key=settings.llm_api_key or "",
+        model_name=settings.llm_model_name or "",
+        temperature=str(settings.llm_temperature),
+        timeout=settings.llm_timeout,
+        enabled=settings.llm_configured,
+        priority=0,
+    )
+    db.add(provider)
+    set_setting_value(db, "llm_providers_initialized", True)
+    db.commit()
+    return True
+
+
+def llm_provider_to_settings(settings: Settings, provider: LLMProvider) -> Settings:
+    return settings.model_copy(
+        update={
+            "llm_provider_type": "openai_compatible",
+            "llm_base_url": provider.base_url,
+            "llm_api_key": provider.api_key,
+            "llm_model_name": provider.model_name,
+            "llm_temperature": _provider_temperature(provider),
+            "llm_timeout": provider.timeout,
+        }
+    )
+
+
+def openai_summary_provider_chain(db: Session, settings: Settings) -> list[tuple[LLMProvider | None, Settings]]:
+    providers = [provider for provider in list_llm_providers(db) if provider.enabled and _provider_configured(provider)]
+    if providers:
+        return [(provider, llm_provider_to_settings(settings, provider)) for provider in providers]
+    if not _settings_flag(db, "llm_providers_initialized") and settings.llm_provider_type == "openai_compatible" and settings.llm_configured:
+        return [(None, settings)]
+    return []
+
+
+def llm_provider_out(provider: LLMProvider) -> dict[str, Any]:
+    return {
+        "id": provider.id,
+        "name": provider.name or "Custom API",
+        "provider_type": provider.provider_type,
+        "base_url": provider.base_url,
+        "model_name": provider.model_name,
+        "temperature": _provider_temperature(provider),
+        "timeout": provider.timeout,
+        "enabled": provider.enabled,
+        "priority": provider.priority,
+        "has_api_key": bool(provider.api_key),
+        "last_error": provider.last_error,
+        "created_at": provider.created_at,
+        "updated_at": provider.updated_at,
+    }
 
 
 def run_to_dict(run: SourceRun | None) -> dict[str, Any] | None:

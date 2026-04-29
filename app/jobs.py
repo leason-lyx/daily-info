@@ -9,8 +9,8 @@ from app.adapters import AdapterError, run_attempt
 from app.config import Settings, get_settings
 from app.db import SessionLocal
 from app.models import Item, Job, JobStatus, Source, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
-from app.services import load_runtime_settings, persist_entries, queue_auto_summaries, queue_job, reconcile_auto_summary_statuses
-from app.summary import content_hash, summarize_item
+from app.services import load_runtime_settings, openai_summary_provider_chain, persist_entries, queue_auto_summaries, queue_job, reconcile_auto_summary_statuses
+from app.summary import content_hash, summarize_item, summarize_openai_compatible
 from app.utils import dumps, loads
 
 
@@ -122,6 +122,9 @@ async def summarize_item_job(db: Session, item_id: str, settings: Settings) -> N
         return
     item.summary_status = SummaryStatus.pending.value
     db.commit()
+    if settings.llm_provider_type == "openai_compatible":
+        await _summarize_item_with_openai_chain(db, item, settings)
+        return
     started = perf_counter()
     try:
         result = await summarize_item(item, settings)
@@ -162,6 +165,66 @@ async def summarize_item_job(db: Session, item_id: str, settings: Settings) -> N
                 duration_ms=int((perf_counter() - started) * 1000),
             )
         )
+    db.commit()
+
+
+async def _summarize_item_with_openai_chain(db: Session, item: Item, settings: Settings) -> None:
+    providers = openai_summary_provider_chain(db, settings)
+    if not providers:
+        item.summary_status = SummaryStatus.not_configured.value
+        db.commit()
+        return
+    last_error = ""
+    for provider, provider_settings in providers:
+        started = perf_counter()
+        try:
+            result = await summarize_openai_compatible(item, provider_settings)
+            data = result.get("data", result)
+            usage = result.get("usage", {})
+            raw_usage = usage.get("raw", {}) if isinstance(usage, dict) else {}
+            duration_ms = int(result.get("duration_ms") or ((perf_counter() - started) * 1000))
+            db.add(
+                Summary(
+                    item_id=item.id,
+                    provider="openai_compatible",
+                    model=provider_settings.llm_model_name or "",
+                    prompt_version="v1",
+                    content_hash=content_hash(item),
+                    status=SummaryStatus.ready.value,
+                    data=dumps(data),
+                    prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
+                    completion_tokens=int(usage.get("completion_tokens", 0) or 0),
+                    total_tokens=int(usage.get("total_tokens", 0) or 0),
+                    reasoning_tokens=int(usage.get("reasoning_tokens", 0) or 0),
+                    usage_json=dumps(raw_usage),
+                    duration_ms=duration_ms,
+                )
+            )
+            if provider:
+                provider.last_error = ""
+            item.summary_status = SummaryStatus.ready.value
+            item.chinese_title = data.get("one_sentence", "")[:120]
+            item.summary = data.get("one_sentence", item.summary)
+            db.commit()
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)[-1000:]
+            if provider:
+                provider.last_error = last_error
+            db.add(
+                Summary(
+                    item_id=item.id,
+                    provider="openai_compatible",
+                    model=provider_settings.llm_model_name or "",
+                    prompt_version="v1",
+                    content_hash=content_hash(item),
+                    status=SummaryStatus.failed.value,
+                    error_message=last_error,
+                    duration_ms=int((perf_counter() - started) * 1000),
+                )
+            )
+            db.flush()
+    item.summary_status = SummaryStatus.failed.value
     db.commit()
 
 

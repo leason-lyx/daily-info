@@ -11,7 +11,7 @@ Daily Info is a self-hosted reading desk for research papers, engineering blogs,
 - Source preview and creation flow for RSS/Atom feeds, RSSHub routes, and HTML index fallback.
 - Background worker and scheduler for source fetching, fulltext extraction, and optional auto-summary jobs.
 - Health dashboard for source runs, fulltext coverage, summary state, job state, and AI provider status.
-- Optional OpenAI-compatible and Codex CLI summary providers.
+- Optional OpenAI-compatible summary providers with ordered fallback, plus Codex CLI.
 - Docker Compose deployment with SQLite by default; no cloud services or AI keys are required to run the app.
 
 ## Screens
@@ -54,9 +54,9 @@ Common settings:
 | `RSSHUB_PUBLIC_INSTANCES` | Comma-separated public RSSHub instances used for RSSHub routes. |
 | `RSSHUB_SELF_HOSTED_BASE_URL` | Optional private RSSHub instance. |
 | `LLM_PROVIDER_TYPE` | `none`, `openai_compatible`, or `codex_cli`. |
-| `LLM_BASE_URL` | OpenAI-compatible API base URL. |
-| `LLM_API_KEY` | Optional API key for summary generation. |
-| `LLM_MODEL_NAME` | Model name for the OpenAI-compatible provider. |
+| `LLM_BASE_URL` | Initial OpenAI-compatible API base URL. Additional custom API profiles can be managed in Settings. |
+| `LLM_API_KEY` | Optional initial API key for summary generation. |
+| `LLM_MODEL_NAME` | Initial model name for the OpenAI-compatible provider. |
 | `CODEX_CLI_PATH` | Path to the Codex CLI when using the Codex summary provider. |
 | `CODEX_CLI_MODEL` | Optional Codex CLI model override. |
 
@@ -161,7 +161,7 @@ curl -fsS http://127.0.0.1:8000/api/source-definitions
 - Do not commit `.env`, `.env.local`, database files, logs, private keys, or exported artifacts.
 - `.gitignore` and `.dockerignore` exclude local secrets, caches, databases, and build outputs.
 - Source catalog files are intended to be public configuration and must not contain secret values.
-- The default AI provider is disabled. Summary generation only uses an external provider after you configure it.
+- The default AI provider is disabled. Summary generation only uses an external provider after you configure it. Settings can store multiple OpenAI-compatible custom API profiles; enabled profiles are tried in order, with automatic fallback inside the same summary task.
 - If deploying beyond localhost, review CORS, network exposure, proxy settings, and database credentials.
 
 ## Repository Status

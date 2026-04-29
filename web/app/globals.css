@@ -1416,6 +1416,84 @@ textarea {
   gap: 12px;
 }
 
+.providerList {
+  display: grid;
+  border-block: 1px solid var(--line);
+}
+
+.providerRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  padding: 14px 0;
+}
+
+.providerRow + .providerRow {
+  border-top: 1px solid var(--line);
+}
+
+.providerOrderControls,
+.providerActions {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.providerFields {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.providerTopLine {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.settingsProviderGrid {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.8fr) minmax(220px, 1.2fr) minmax(180px, 0.8fr);
+  gap: 12px;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.iconButton:hover:not(:disabled) {
+  border-color: #b7c7d8;
+  background: #f8fafc;
+}
+
+.iconButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+.iconButton.danger {
+  color: var(--bad);
+}
+
+.checkLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #344456;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .fieldLabelRow {
   display: flex;
   align-items: center;
@@ -1505,7 +1583,9 @@ textarea {
   .healthOverview,
   .settingsOverview,
   .usageStrip,
-  .settingsFormGrid {
+  .settingsFormGrid,
+  .settingsProviderGrid,
+  .providerRow {
     grid-template-columns: 1fr;
   }
 

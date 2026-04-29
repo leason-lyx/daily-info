@@ -11,10 +11,11 @@ from sqlalchemy.orm import Session, selectinload
 from app.adapters import AdapterError, preview_source
 from app.db import get_db, init_db
 from app.jobs import schedule_auto_summaries, schedule_due_sources
-from app.models import Item, Job, JobStatus, Setting, Source, SourceRun, SourceSubscription, Summary, SummaryStatus
+from app.models import Item, Job, JobStatus, LLMProvider, Source, SourceRun, SourceSubscription, Summary, SummaryStatus
 from app.schemas import (
     AiProviderTestResult,
     ItemListOut,
+    LLMProviderIn,
     PreviewRequest,
     PreviewResponse,
     SettingsOut,
@@ -33,8 +34,11 @@ from app.services import (
     export_source_pack,
     import_source_pack,
     item_to_out,
+    ensure_legacy_llm_provider,
     list_source_definitions,
+    list_llm_providers,
     load_runtime_settings,
+    llm_provider_out,
     llm_usage_stats,
     latest_runs,
     patch_source,
@@ -46,6 +50,7 @@ from app.services import (
     source_content_stats,
     source_summary_stats,
     source_to_out,
+    set_setting_value,
 )
 from app.subscriptions import subscribe_source, subscription_to_dict, unsubscribe_source
 from app.summary import summarize_codex_cli, summarize_openai_compatible
@@ -67,6 +72,8 @@ def startup() -> None:
     init_db()
     with next(get_db()) as db:
         sync_default_source_pack(db)
+        runtime_settings = load_runtime_settings(db)
+        ensure_legacy_llm_provider(db, runtime_settings)
         reconcile_auto_summary_statuses(db, load_runtime_settings(db))
 
 
@@ -495,6 +502,7 @@ def health(db: Db):
 
 @app.get("/api/settings", response_model=SettingsOut)
 def get_app_settings(db: Db):
+    ensure_legacy_llm_provider(db, load_runtime_settings(db))
     settings = load_runtime_settings(db)
     return SettingsOut(
         database_url=_redact_database_url(settings.database_url),
@@ -506,27 +514,100 @@ def get_app_settings(db: Db):
         llm_model_name=settings.llm_model_name,
         codex_cli_path=settings.codex_cli_path,
         codex_cli_model=settings.codex_cli_model,
+        llm_providers=[llm_provider_out(provider) for provider in list_llm_providers(db)],
         llm_usage=llm_usage_stats(db),
     )
 
 
 @app.patch("/api/settings")
 def patch_app_settings(payload: SettingsPatch, db: Db):
+    payload_data = payload.model_dump(exclude_unset=True)
+    providers_payload = payload_data.pop("llm_providers", None)
     for key, value in payload.model_dump(exclude_unset=True).items():
+        if key == "llm_providers":
+            continue
         if key == "llm_api_key" and (value is None or not value.strip()):
             continue
-        stored = db.get(Setting, key)
-        if not stored:
-            stored = Setting(key=key)
-            db.add(stored)
-        stored.value = dumps(value)
+        set_setting_value(db, key, value)
+    if providers_payload is not None:
+        _sync_llm_providers(db, payload.llm_providers or [])
+        set_setting_value(db, "llm_providers_initialized", True)
+    else:
+        _sync_legacy_llm_provider_patch(db, payload_data)
     db.commit()
     return {"saved": True, "note": "AI runtime settings are stored in DB. RSSHub is configured by environment or config files."}
 
 
+def _sync_llm_providers(db: Session, providers: list[LLMProviderIn]) -> None:
+    existing = {provider.id: provider for provider in list_llm_providers(db)}
+    seen_ids: set[int] = set()
+    for index, payload in enumerate(providers):
+        if payload.id and payload.id in existing:
+            provider = existing[payload.id]
+            seen_ids.add(payload.id)
+        else:
+            provider = LLMProvider(provider_type="openai_compatible")
+            db.add(provider)
+        provider.name = payload.name.strip() or "Custom API"
+        provider.provider_type = "openai_compatible"
+        provider.base_url = payload.base_url.strip()
+        provider.model_name = payload.model_name.strip()
+        provider.temperature = str(payload.temperature)
+        provider.timeout = payload.timeout
+        provider.enabled = payload.enabled
+        provider.priority = payload.priority if payload.priority is not None else index
+        if payload.api_key is not None and payload.api_key != "":
+            provider.api_key = payload.api_key
+        if not provider.enabled:
+            provider.last_error = ""
+    for provider_id, provider in existing.items():
+        if provider_id not in seen_ids:
+            db.delete(provider)
+
+
+def _sync_legacy_llm_provider_patch(db: Session, payload_data: dict) -> None:
+    if payload_data.get("llm_provider_type") not in {None, "openai_compatible"}:
+        return
+    legacy_keys = {"llm_base_url", "llm_api_key", "llm_model_name", "llm_temperature", "llm_timeout"}
+    if not legacy_keys.intersection(payload_data):
+        return
+    provider = next(iter(list_llm_providers(db)), None)
+    if not provider:
+        return
+    if "llm_base_url" in payload_data:
+        provider.base_url = (payload_data.get("llm_base_url") or "").strip()
+    if "llm_model_name" in payload_data:
+        provider.model_name = (payload_data.get("llm_model_name") or "").strip()
+    if payload_data.get("llm_api_key"):
+        provider.api_key = str(payload_data["llm_api_key"])
+    if "llm_temperature" in payload_data and payload_data["llm_temperature"] is not None:
+        provider.temperature = str(payload_data["llm_temperature"])
+    if "llm_timeout" in payload_data and payload_data["llm_timeout"] is not None:
+        provider.timeout = int(payload_data["llm_timeout"])
+    provider.enabled = bool(provider.base_url and provider.api_key and provider.model_name)
+
+
 def _settings_for_ai_test(db: Session, payload: SettingsPatch):
     base_settings = load_runtime_settings(db)
+    if payload.llm_providers and len(payload.llm_providers) == 1:
+        provider = payload.llm_providers[0]
+        api_key = provider.api_key or ""
+        if provider.id and not api_key:
+            saved = db.get(LLMProvider, provider.id)
+            if saved:
+                api_key = saved.api_key
+        return base_settings.model_copy(
+            update={
+                "llm_provider_type": "openai_compatible",
+                "llm_base_url": provider.base_url or None,
+                "llm_api_key": api_key or None,
+                "llm_model_name": provider.model_name or None,
+                "llm_temperature": provider.temperature,
+                "llm_timeout": provider.timeout,
+            }
+        )
     overrides = payload.model_dump(exclude_unset=True)
+    overrides.pop("llm_providers", None)
     if overrides.get("llm_api_key") == "":
         overrides.pop("llm_api_key")
     return base_settings.model_copy(update=overrides)
