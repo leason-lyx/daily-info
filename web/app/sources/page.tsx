@@ -260,24 +260,15 @@ function SelectFilter({ id, label, value, options, onChange }: { id: string; lab
 }
 
 function SourceMetadata({ source }: { source: Source }) {
-  const attemptLabel = `${source.fetch?.attempts?.length || source.attempts?.length || 0} ${(source.fetch?.attempts?.length || source.attempts?.length || 0) === 1 ? "attempt" : "attempts"}`;
-  const summary = source.summary?.auto ? `Summary auto on, ${source.summary.window_days || 7}d` : "Summary manual";
+  const summary = source.summary?.auto ? `Auto summary · ${source.summary.window_days || 7}d` : "Manual summary";
   const fetchInterval = source.fetch?.interval_seconds || source.poll_interval;
   return (
     <div className="sourceDetails">
-      <div className="sourceDescriptor">
-        <span className="monoValue">{source.id}</span>
-        <span>{source.kind || source.content_type}</span>
-        <span>{source.platform || "unknown platform"}</span>
-        <span>{sourceGroupName(source)}</span>
-      </div>
-      <div className="sourceFacts">
-        <span>{source.catalog_file || (source.is_builtin ? "Catalog" : "Custom")}</span>
-        <span>{source.language || source.language_hint || "auto"}</span>
-        <span>{formatFetchInterval(fetchInterval)}</span>
-        <span>{summary}</span>
-        <span>{attemptLabel}</span>
-      </div>
+      <span className="sourcePill strong">{source.kind || source.content_type}</span>
+      {source.platform ? <span className="sourcePill">{source.platform}</span> : null}
+      <span className="sourcePill">{sourceGroupName(source)}</span>
+      <span className="sourcePill quiet">{formatFetchInterval(fetchInterval)}</span>
+      <span className="sourcePill quiet">{summary}</span>
     </div>
   );
 }
@@ -360,20 +351,20 @@ function relativeTime(value: Date | null) {
 }
 
 function formatFetchInterval(seconds: number | undefined) {
-  if (!seconds || seconds <= 0) return "Fetch interval not set";
+  if (!seconds || seconds <= 0) return "Interval not set";
   if (seconds % (60 * 60 * 24) === 0) {
     const days = seconds / (60 * 60 * 24);
-    return `Fetch every ${days} ${days === 1 ? "day" : "days"}`;
+    return `Every ${days} ${days === 1 ? "day" : "days"}`;
   }
   if (seconds % (60 * 60) === 0) {
     const hours = seconds / (60 * 60);
-    return `Fetch every ${hours} ${hours === 1 ? "hour" : "hours"}`;
+    return `Every ${hours} ${hours === 1 ? "hour" : "hours"}`;
   }
   if (seconds % 60 === 0) {
     const minutes = seconds / 60;
-    return `Fetch every ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+    return `Every ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
   }
-  return `Fetch every ${seconds} seconds`;
+  return `Every ${seconds} seconds`;
 }
 
 function truncate(value: string, length: number) {
