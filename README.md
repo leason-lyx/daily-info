@@ -1,28 +1,82 @@
 # Daily Info
 
-Daily Info is a self-hosted research reading desk for papers, blogs, and RSSHub-backed posts. The current implementation follows `PRD.md` and `docs/design.md`.
+[English](README.md) | [简体中文](README_zh-CN.md)
 
-## Run with Docker Compose
+Daily Info is a self-hosted reading desk for research papers, engineering blogs, AI lab updates, tech media, and RSSHub-backed feeds. It collects sources into a searchable timeline, keeps source health visible, and can optionally generate summaries with an OpenAI-compatible provider or Codex CLI.
+
+## Features
+
+- Unified feed for papers, blogs, and posts, with search, source filters, summary status, read/star/hidden states, and tags.
+- Source Catalog backed by `config/sources/*.yaml`, with explicit subscriptions so only chosen sources are fetched and shown in the default feed.
+- Source preview and creation flow for RSS/Atom feeds, RSSHub routes, and HTML index fallback.
+- Background worker and scheduler for source fetching, fulltext extraction, and optional auto-summary jobs.
+- Health dashboard for source runs, fulltext coverage, summary state, job state, and AI provider status.
+- Optional OpenAI-compatible and Codex CLI summary providers.
+- Docker Compose deployment with SQLite by default; no cloud services or AI keys are required to run the app.
+
+## Screens
+
+- Web app: `http://localhost:3000`
+- API docs: `http://localhost:8000/docs`
+- Health page: `http://localhost:3000/health`
+- Source Catalog: `http://localhost:3000/sources`
+
+## Quick Start
+
+The recommended local deployment path is Docker Compose.
 
 ```bash
 cp .env.example .env
 docker compose up -d
 ```
 
-Open:
+Open `http://localhost:3000`.
 
-- Web: http://localhost:3000
-- API docs: http://localhost:8000/docs
+The default Compose stack starts:
 
-The default stack uses SQLite at `/data/daily-info.db` inside the API/worker/scheduler containers, backed by the `daily_info_data` Docker volume. It does not require AI keys, Postgres, RSSHub, or cloud services.
+- `api`: FastAPI backend on port `8000`
+- `web`: Next.js frontend on port `3000`
+- `worker`: background job runner
+- `scheduler`: periodic fetch and summary scheduler
 
-Source definitions are loaded from `config/sources/*.yaml` at startup and synchronized into the database as a catalog. Catalog entries are opt-in: only subscribed sources are scheduled for fetch and shown in the default feed. The Docker API image copies `config`, so Docker Compose uses the same catalog as local development.
+SQLite data is stored at `/data/daily-info.db` inside the backend containers and persisted in the `daily_info_data` Docker volume.
 
-Secrets belong in `.env` or `.env.local`, not in source packs. The Docker build context excludes `.env.*` files except the checked-in example templates.
+## Configuration
 
-## Local development
+Daily Info reads runtime settings from environment variables and, for some UI-managed settings, from the database.
 
-Use the local env template instead of the Docker template. The Docker template points SQLite at `/data`, which usually does not exist on the host machine.
+Common settings:
+
+| Variable | Description |
+| --- | --- |
+| `DATABASE_URL` | Database connection string. Docker defaults to `sqlite:////data/daily-info.db`. |
+| `NEXT_PUBLIC_API_BASE_URL` | API URL used by the browser. Defaults to `http://localhost:8000`. |
+| `RSSHUB_PUBLIC_INSTANCES` | Comma-separated public RSSHub instances used for RSSHub routes. |
+| `RSSHUB_SELF_HOSTED_BASE_URL` | Optional private RSSHub instance. |
+| `LLM_PROVIDER_TYPE` | `none`, `openai_compatible`, or `codex_cli`. |
+| `LLM_BASE_URL` | OpenAI-compatible API base URL. |
+| `LLM_API_KEY` | Optional API key for summary generation. |
+| `LLM_MODEL_NAME` | Model name for the OpenAI-compatible provider. |
+| `CODEX_CLI_PATH` | Path to the Codex CLI when using the Codex summary provider. |
+| `CODEX_CLI_MODEL` | Optional Codex CLI model override. |
+
+Secrets belong in `.env` or `.env.local`, never in source catalog files. The Docker build context excludes `.env.*` files except the checked-in example templates.
+
+## Source Catalog
+
+Built-in source definitions live in `config/sources/*.yaml`. They are synchronized into the database at startup as catalog entries.
+
+Catalog entries are opt-in:
+
+- Subscribed sources are scheduled for fetch.
+- Subscribed sources appear in the default feed.
+- Available but unsubscribed sources stay visible in the Source Catalog for discovery.
+
+Source definition files may include fetch attempts, fulltext policy, summary policy, filters, tags, grouping, and metadata. They should not contain API keys, cookies, tokens, or other secrets. If a source eventually needs credentials, store only a secret reference in catalog metadata and keep the secret value in runtime configuration.
+
+## Local Development
+
+Use `.env.local.example` for host-machine development. The Docker `.env.example` points SQLite at `/data`, which is usually only valid inside containers.
 
 ```bash
 cp .env.local.example .env.local
@@ -47,18 +101,6 @@ python -m app.worker
 python -m app.scheduler
 ```
 
-Fetch every registered source once and audit whether each source provides feed
-fulltext, feed summaries, title-only entries, detail-page fulltext, paper
-abstracts, or fetch failures:
-
-```bash
-python -m app.source_audit
-```
-
-The audit command backs up the SQLite database first, applies the recommended
-default-pack fulltext strategies, fetches disabled sources without changing
-their enabled state, and writes a JSON report under `artifacts/`.
-
 Frontend:
 
 ```bash
@@ -67,23 +109,74 @@ npm install
 npm run dev
 ```
 
-If `npm run dev` reports `Watchpack Error (watcher): Error: EMFILE: too many open files`, use the polling dev server:
+If the dev server hits file watcher limits, use polling:
 
 ```bash
 npm run dev:poll
 ```
 
-For browser checks that do not need hot reload, the production path is the most stable:
+For a production-like frontend check:
 
 ```bash
 npm run build
 npm run start
 ```
 
-## MVP surface
+## Source Audit
 
-- Unified feed with type, source, time, search, summary status, read/star/hidden filters.
-- Source Catalog with many configured sources and saved subscriptions for the default feed.
-- `/sources/new` supports RSS/Atom, RSSHub route, and HTML fallback preview before save.
-- `/health` separates source fetch health, fulltext health, summary state, job state and AI provider status.
-- Optional OpenAI-compatible and Codex CLI summary provider boundaries.
+Run the source audit command to fetch sources once and inspect content quality:
+
+```bash
+python -m app.source_audit
+```
+
+The audit backs up the SQLite database first, fetches sources without changing their subscription state, and writes a JSON report under `artifacts/`.
+
+## Testing
+
+Backend tests:
+
+```bash
+uv run pytest
+```
+
+Frontend checks:
+
+```bash
+cd web
+npm run lint
+npm run build
+```
+
+For acceptance testing, use Docker Compose so validation follows the same runtime path as local deployment:
+
+```bash
+docker compose up --build -d --force-recreate api worker scheduler web
+curl -fsS http://127.0.0.1:8000/api/health
+curl -fsS http://127.0.0.1:8000/api/source-definitions
+```
+
+## Security Notes
+
+- Do not commit `.env`, `.env.local`, database files, logs, private keys, or exported artifacts.
+- `.gitignore` and `.dockerignore` exclude local secrets, caches, databases, and build outputs.
+- Source catalog files are intended to be public configuration and must not contain secret values.
+- The default AI provider is disabled. Summary generation only uses an external provider after you configure it.
+- If deploying beyond localhost, review CORS, network exposure, proxy settings, and database credentials.
+
+## Repository Status
+
+This project is early-stage. Detailed maintenance docs live in [`docs/README.md`](docs/README.md).
+
+No open-source license has been selected yet. Until a license is added, reuse and redistribution rights are not explicitly granted.
+
+## Contributing
+
+Issues and pull requests are welcome once the repository is made public. For larger changes, please open an issue first so the design can be discussed.
+
+Recommended PR checklist:
+
+- Keep source catalog changes free of secrets.
+- Run backend and frontend checks.
+- Validate functional UI changes in a browser through Docker Compose.
+- Update documentation when setup, configuration, or user-visible behavior changes.
