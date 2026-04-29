@@ -748,6 +748,32 @@ textarea {
   gap: 8px;
 }
 
+.sourceGroup {
+  display: grid;
+  gap: 10px;
+}
+
+.sourceGroup + .sourceGroup {
+  margin-top: 10px;
+}
+
+.sourceGroupHead {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 2px 0;
+}
+
+.sourceGroupHead h2 {
+  margin: 0 0 3px;
+}
+
+.sourceGroupRows {
+  display: grid;
+  gap: 10px;
+}
+
 .sourceHeader {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(250px, 360px);
@@ -760,6 +786,12 @@ textarea {
   display: grid;
   gap: 8px;
   min-width: 0;
+}
+
+.sourceTitleBlock h3 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
 }
 
 .sourceDetails {
@@ -1516,6 +1548,10 @@ textarea {
 
   .sourceHeader {
     grid-template-columns: 1fr;
+  }
+
+  .sourceGroupHead {
+    display: grid;
   }
 
   .healthListRow {

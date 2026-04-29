@@ -1,38 +1,25 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { Download, Edit3, Play, Plus, RefreshCcw, Save, Upload, X } from "lucide-react";
-import { api, Source, SourceAttempt } from "@/lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { Eye, Play, Plus, RefreshCcw, Search } from "lucide-react";
+import { api, Source } from "@/lib/api";
 
-type SourceEditForm = {
-  name: string;
-  content_type: Source["content_type"];
-  platform: string;
-  homepage_url: string;
+type Filters = {
+  q: string;
   group: string;
-  priority: string;
-  poll_interval: string;
-  auto_summary_enabled: boolean;
-  auto_summary_days: string;
-  language_hint: string;
-  include_keywords: string;
-  exclude_keywords: string;
-  default_tags: string;
-  auth_mode: string;
-  stability_level: string;
-  attempts_json: string;
-  fulltext_json: string;
+  kind: string;
+  platform: string;
+  language: string;
 };
+
+const EMPTY_FILTERS: Filters = { q: "", group: "", kind: "", platform: "", language: "" };
 
 export default function SourcesPage() {
   const [sources, setSources] = useState<Source[]>([]);
+  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [message, setMessage] = useState("");
   const [pendingActions, setPendingActions] = useState<Set<string>>(() => new Set());
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<SourceEditForm | null>(null);
-  const [importOpen, setImportOpen] = useState(false);
-  const [importText, setImportText] = useState("");
 
   function isPending(actionId: string) {
     return pendingActions.has(actionId);
@@ -53,8 +40,9 @@ export default function SourcesPage() {
   async function reload() {
     try {
       setSources(await api.getSources());
+      setMessage("");
     } catch (err) {
-      setMessage(`Could not load sources: ${errorMessage(err)}`);
+      setMessage(`Could not load source catalog: ${errorMessage(err)}`);
     }
   }
 
@@ -65,23 +53,86 @@ export default function SourcesPage() {
         if (alive) setSources(rows);
       })
       .catch((err) => {
-        if (alive) setMessage(`Could not load sources: ${errorMessage(err)}`);
+        if (alive) setMessage(`Could not load source catalog: ${errorMessage(err)}`);
       });
     return () => {
       alive = false;
     };
   }, []);
 
-  async function toggle(source: Source) {
-    const actionId = `${source.id}:toggle`;
+  const facets = useMemo(() => {
+    return {
+      groups: uniqueSorted(sources.map(sourceGroupName)),
+      kinds: uniqueSorted(sources.map((source) => source.kind || source.content_type)),
+      platforms: uniqueSorted(sources.map((source) => source.platform).filter(Boolean)),
+      languages: uniqueSorted(sources.map((source) => source.language || source.language_hint || "auto")),
+    };
+  }, [sources]);
+
+  const visibleSources = useMemo(() => {
+    const q = filters.q.trim().toLowerCase();
+    return sources.filter((source) => {
+      if (filters.group && sourceGroupName(source) !== filters.group) return false;
+      if (filters.kind && (source.kind || source.content_type) !== filters.kind) return false;
+      if (filters.platform && source.platform !== filters.platform) return false;
+      if (filters.language && (source.language || source.language_hint || "auto") !== filters.language) return false;
+      if (!q) return true;
+      return [source.title, source.name, source.id, source.platform, source.group, ...(source.default_tags || [])]
+        .join(" ")
+        .toLowerCase()
+        .includes(q);
+    });
+  }, [filters, sources]);
+
+  const visibleSourceGroups = useMemo(() => {
+    const groups = new Map<string, Source[]>();
+    for (const source of visibleSources) {
+      const groupName = sourceGroupName(source);
+      groups.set(groupName, [...(groups.get(groupName) || []), source]);
+    }
+    return Array.from(groups.entries())
+      .map(([name, groupSources]) => {
+        const sortedSources = [...groupSources].sort((a, b) => sourceTitle(a).localeCompare(sourceTitle(b)));
+        return {
+          name,
+          sources: sortedSources,
+          subscribedCount: sortedSources.filter((source) => source.subscribed).length,
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [visibleSources]);
+
+  async function toggleSubscription(source: Source) {
+    const actionId = `${source.id}:subscription`;
     startPending(actionId);
     setMessage("");
     try {
-      const updated = await api.patchSource(source.id, { enabled: !source.enabled });
-      setMessage(`${updated.name} is now ${updated.enabled ? "enabled" : "disabled"}.`);
+      if (source.subscribed) {
+        await api.unsubscribeSource(source.id);
+        setMessage(`Unsubscribed ${source.title || source.name}. It will no longer be fetched or shown in the default feed.`);
+      } else {
+        await api.subscribeSource(source.id);
+        setMessage(`Subscribed ${source.title || source.name}. It is now eligible for fetch and feed display.`);
+      }
       await reload();
     } catch (err) {
-      setMessage(`Could not update ${source.name}: ${errorMessage(err)}`);
+      setMessage(`Could not update ${source.title || source.name}: ${errorMessage(err)}`);
+    } finally {
+      finishPending(actionId);
+    }
+  }
+
+  async function preview(source: Source) {
+    const actionId = `${source.id}:preview`;
+    startPending(actionId);
+    setMessage("");
+    try {
+      const attempt = source.fetch?.attempts?.[0];
+      if (!attempt) throw new Error("This source has no fetch attempts.");
+      const result = await api.previewSource({ attempt });
+      setMessage(JSON.stringify(result, null, 2));
+    } catch (err) {
+      setMessage(`Could not preview ${source.title || source.name}: ${errorMessage(err)}`);
     } finally {
       finishPending(actionId);
     }
@@ -89,303 +140,139 @@ export default function SourcesPage() {
 
   async function fetchNow(source: Source) {
     const actionId = `${source.id}:fetch`;
-    const previousRunId = source.latest_run?.id;
     startPending(actionId);
     setMessage("");
     try {
       const result = await api.fetchSource(source.id);
-      setMessage(`Queued ${source.name} fetch job ${result.job_id}.`);
-      await reload();
-      await pollFetchUntilSettled(result.job_id, source.id, previousRunId);
-    } catch (err) {
-      setMessage(`Could not fetch ${source.name}: ${errorMessage(err)}`);
-    } finally {
-      finishPending(actionId);
-    }
-  }
-
-  async function pollFetchUntilSettled(jobId: number, sourceId: string, previousRunId: unknown) {
-    for (let i = 0; i < 150; i += 1) {
-      await delay(2000);
-      const [nextSources, health] = await Promise.all([api.getSources(), api.health()]);
-      setSources(nextSources);
-      const activeJob = health.jobs?.active?.find((job) => job.id === jobId);
-      if (activeJob) continue;
-      const recentJob = health.jobs?.recent?.find((job) => job.id === jobId);
-      if (recentJob && !["queued", "running", "retrying"].includes(String(recentJob.status))) return;
-      const current = nextSources.find((item) => item.id === sourceId);
-      const run = current?.latest_run;
-      if (!run) continue;
-      const isNewRun = run.id !== previousRunId;
-      const status = typeof run.status === "string" ? run.status : "";
-      if (isNewRun && status && status !== "running") return;
-    }
-  }
-
-  async function exportPack() {
-    const actionId = "export";
-    startPending(actionId);
-    setMessage("");
-    try {
-      const text = await api.exportSources();
-      setMessage(text);
-    } catch (err) {
-      setMessage(`Could not export sources: ${errorMessage(err)}`);
-    } finally {
-      finishPending(actionId);
-    }
-  }
-
-  function startEdit(source: Source) {
-    setEditingId(source.id);
-    setMessage("");
-    setEditForm({
-      name: source.name,
-      content_type: source.content_type,
-      platform: source.platform,
-      homepage_url: source.homepage_url,
-      group: source.group,
-      priority: String(source.priority),
-      poll_interval: String(source.poll_interval),
-      auto_summary_enabled: source.auto_summary_enabled,
-      auto_summary_days: String(source.auto_summary_days || 7),
-      language_hint: source.language_hint,
-      include_keywords: source.include_keywords.join(", "),
-      exclude_keywords: source.exclude_keywords.join(", "),
-      default_tags: source.default_tags.join(", "),
-      auth_mode: source.auth_mode,
-      stability_level: source.stability_level,
-      attempts_json: JSON.stringify(source.attempts, null, 2),
-      fulltext_json: JSON.stringify(source.fulltext, null, 2),
-    });
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-    setEditForm(null);
-    setMessage("");
-  }
-
-  async function saveEdit(source: Source) {
-    if (!editForm) return;
-    const actionId = `${source.id}:edit`;
-    startPending(actionId);
-    setMessage("");
-    try {
-      const attempts = parseAttempts(editForm.attempts_json);
-      const fulltext = parseObject(editForm.fulltext_json, "fulltext");
-      await api.patchSource(source.id, {
-        name: editForm.name.trim(),
-        content_type: editForm.content_type,
-        platform: editForm.platform.trim(),
-        homepage_url: editForm.homepage_url.trim(),
-        group: editForm.group.trim(),
-        priority: parsePositiveInteger(editForm.priority, "priority"),
-        poll_interval: parsePositiveInteger(editForm.poll_interval, "poll interval"),
-        auto_summary_enabled: editForm.auto_summary_enabled,
-        auto_summary_days: parseAtLeastOne(editForm.auto_summary_days, "summary window days"),
-        language_hint: editForm.language_hint.trim(),
-        include_keywords: parseCsv(editForm.include_keywords),
-        exclude_keywords: parseCsv(editForm.exclude_keywords),
-        default_tags: parseCsv(editForm.default_tags),
-        auth_mode: editForm.auth_mode.trim(),
-        stability_level: editForm.stability_level.trim(),
-        attempts,
-        fulltext,
-      });
-      setMessage(`Saved ${source.name}.`);
-      setEditingId(null);
-      setEditForm(null);
+      setMessage(`Queued ${source.title || source.name} fetch job ${result.job_id}.`);
       await reload();
     } catch (err) {
-      setMessage(`Could not save ${source.name}: ${errorMessage(err)}`);
+      setMessage(`Could not fetch ${source.title || source.name}: ${errorMessage(err)}`);
     } finally {
       finishPending(actionId);
     }
   }
 
-  async function importPack() {
-    const actionId = "import";
-    startPending(actionId);
-    setMessage("");
-    try {
-      const result = await api.importSources(importText);
-      setMessage(`Imported ${result.imported} sources.`);
-      setImportOpen(false);
-      setImportText("");
-      await reload();
-    } catch (err) {
-      setMessage(`Could not import sources: ${errorMessage(err)}`);
-    } finally {
-      finishPending(actionId);
-    }
-  }
+  const subscribedCount = sources.filter((source) => source.subscribed).length;
 
   return (
     <div>
       <header className="pageHead">
         <div>
-          <h1>Source Registry</h1>
+          <h1>Source Catalog</h1>
+          <span className="subtle">{subscribedCount}/{sources.length} subscribed sources feed the default timeline</span>
         </div>
         <div className="actions">
           <Link className="button primary" href="/sources/new">
             <Plus size={16} /> New
           </Link>
-          <button className="button" onClick={() => setImportOpen((value) => !value)}>
-            <Upload size={16} /> Import
-          </button>
           <button className="button" onClick={reload}>
             <RefreshCcw size={16} /> Refresh
           </button>
-          <button className="button" onClick={exportPack} disabled={isPending("export")}>
-            <Download size={16} /> Export
-          </button>
         </div>
       </header>
-      {importOpen && (
-        <section className="panel stack sourceEditor">
+
+      <section className="toolbar">
+        <div className="toolbarPrimary">
           <div className="field">
-            <label htmlFor="source-pack-yaml">Source pack YAML</label>
-            <textarea id="source-pack-yaml" value={importText} onChange={(event) => setImportText(event.target.value)} placeholder="version: 1&#10;sources: []" />
+            <label htmlFor="source-search">Search</label>
+            <input id="source-search" value={filters.q} onChange={(event) => setFilters({ ...filters, q: event.target.value })} placeholder="source, platform, tag" />
           </div>
-          <div className="actions">
-            <button className="button primary" onClick={importPack} disabled={isPending("import") || !importText.trim()}>
-              <Upload size={16} /> Import
-            </button>
-            <button className="button" onClick={() => setImportOpen(false)}>
-              <X size={16} /> Cancel
-            </button>
-          </div>
-        </section>
-      )}
+          <SelectFilter id="source-group-filter" label="Group" value={filters.group} options={facets.groups} onChange={(group) => setFilters({ ...filters, group })} />
+          <SelectFilter id="source-kind-filter" label="Kind" value={filters.kind} options={facets.kinds} onChange={(kind) => setFilters({ ...filters, kind })} />
+          <SelectFilter id="source-platform-filter" label="Platform" value={filters.platform} options={facets.platforms} onChange={(platform) => setFilters({ ...filters, platform })} />
+          <SelectFilter id="source-language-filter" label="Language" value={filters.language} options={facets.languages} onChange={(language) => setFilters({ ...filters, language })} />
+        </div>
+      </section>
+
       <section className="stack">
-        {sources.map((source) => (
-          <article key={source.id} className="sourceRow">
-            <div className="sourceHeader">
-              <div className="sourceTitleBlock">
-                <h2>{source.name}</h2>
-                <SourceMetadata source={source} />
-              </div>
-              <SourceRunStatus source={source} />
-            </div>
-            <div className="sourceActions" aria-label={`${source.name} actions`}>
-              <button
-                className={`sourceSwitch ${source.enabled ? "enabled" : "disabled"}`}
-                title={`Toggle ${source.name} source status`}
-                aria-label={`Toggle ${source.name} source status. Currently ${source.enabled ? "enabled" : "disabled"}.`}
-                aria-pressed={source.enabled}
-                onClick={() => toggle(source)}
-                disabled={isPending(`${source.id}:toggle`)}
-              >
-                <span className="switchKnob" aria-hidden="true" />
-                <span className="switchText">
-                  {isPending(`${source.id}:toggle`) ? "saving" : source.enabled ? "enabled" : "disabled"}
+        {visibleSourceGroups.map((group) => (
+          <section className="sourceGroup" key={group.name} aria-labelledby={`source-group-${slugify(group.name)}`}>
+            <div className="sourceGroupHead">
+              <div>
+                <h2 id={`source-group-${slugify(group.name)}`}>{group.name}</h2>
+                <span className="subtle">
+                  {group.subscribedCount}/{group.sources.length} subscribed
                 </span>
-              </button>
-              <button className="button compact" title="Fetch now" onClick={() => fetchNow(source)} disabled={isPending(`${source.id}:fetch`)}>
-                <Play size={16} />
-                {isPending(`${source.id}:fetch`) ? "Queueing..." : "Fetch now"}
-              </button>
-              <button className="button compact" title="Edit source" onClick={() => startEdit(source)} disabled={isPending(`${source.id}:edit`)}>
-                <Edit3 size={16} /> Edit
-              </button>
+              </div>
             </div>
-            {editingId === source.id && editForm && (
-              <form className="sourceEditor stack" onSubmit={(event) => event.preventDefault()}>
-                <div className="grid3">
-                  <TextField id="source-edit-name" label="Name" value={editForm.name} onChange={(value) => setEditForm({ ...editForm, name: value })} />
-                  <div className="field">
-                    <label htmlFor="source-edit-content-type">Type</label>
-                    <select id="source-edit-content-type" value={editForm.content_type} onChange={(event) => setEditForm({ ...editForm, content_type: event.target.value as Source["content_type"] })}>
-                      <option value="paper">Paper</option>
-                      <option value="blog">Blog</option>
-                      <option value="post">Post</option>
-                    </select>
+            <div className="sourceGroupRows">
+              {group.sources.map((source) => (
+                <article key={source.id} className="sourceRow">
+                  <div className="sourceHeader">
+                    <div className="sourceTitleBlock">
+                      <h3>{sourceTitle(source)}</h3>
+                      <SourceMetadata source={source} />
+                    </div>
+                    <SourceRunStatus source={source} />
                   </div>
-                  <TextField id="source-edit-platform" label="Platform" value={editForm.platform} onChange={(value) => setEditForm({ ...editForm, platform: value })} />
-                </div>
-                <div className="grid3">
-                  <TextField id="source-edit-homepage-url" label="Homepage URL" value={editForm.homepage_url} onChange={(value) => setEditForm({ ...editForm, homepage_url: value })} />
-                  <TextField id="source-edit-group" label="Group" value={editForm.group} onChange={(value) => setEditForm({ ...editForm, group: value })} />
-                  <TextField id="source-edit-language-hint" label="Language hint" value={editForm.language_hint} onChange={(value) => setEditForm({ ...editForm, language_hint: value })} />
-                </div>
-                <div className="grid3">
-                  <TextField id="source-edit-priority" label="Priority" value={editForm.priority} onChange={(value) => setEditForm({ ...editForm, priority: value })} />
-                  <TextField id="source-edit-poll-interval" label="Poll interval" value={editForm.poll_interval} onChange={(value) => setEditForm({ ...editForm, poll_interval: value })} />
-                  <TextField id="source-edit-auth-mode" label="Auth mode" value={editForm.auth_mode} onChange={(value) => setEditForm({ ...editForm, auth_mode: value })} />
-                </div>
-                <div className="grid3">
-                  <TextField id="source-edit-stability-level" label="Stability level" value={editForm.stability_level} onChange={(value) => setEditForm({ ...editForm, stability_level: value })} />
-                  <TextField id="source-edit-summary-window-days" label="Summary window days" value={editForm.auto_summary_days} onChange={(value) => setEditForm({ ...editForm, auto_summary_days: value })} />
-                  <label className="checkLine">
-                    <input
-                      type="checkbox"
-                      checked={editForm.auto_summary_enabled}
-                      onChange={(event) => setEditForm({ ...editForm, auto_summary_enabled: event.target.checked })}
-                    />
-                    <span>Auto AI summary</span>
-                  </label>
-                </div>
-                <div className="grid2">
-                  <TextField id="source-edit-default-tags" label="Default tags" value={editForm.default_tags} onChange={(value) => setEditForm({ ...editForm, default_tags: value })} />
-                </div>
-                <div className="grid2">
-                  <TextField id="source-edit-include-keywords" label="Include keywords" value={editForm.include_keywords} onChange={(value) => setEditForm({ ...editForm, include_keywords: value })} />
-                  <TextField id="source-edit-exclude-keywords" label="Exclude keywords" value={editForm.exclude_keywords} onChange={(value) => setEditForm({ ...editForm, exclude_keywords: value })} />
-                </div>
-                <div className="grid2">
-                  <div className="field">
-                    <label htmlFor="source-edit-attempts-json">Attempts JSON</label>
-                    <textarea id="source-edit-attempts-json" value={editForm.attempts_json} onChange={(event) => setEditForm({ ...editForm, attempts_json: event.target.value })} />
+                  <div className="sourceActions" aria-label={`${sourceTitle(source)} actions`}>
+                    <button
+                      className={`sourceSwitch ${source.subscribed ? "enabled" : "disabled"}`}
+                      title={`${source.subscribed ? "Unsubscribe from" : "Subscribe to"} ${sourceTitle(source)}`}
+                      aria-label={`${source.subscribed ? "Unsubscribe from" : "Subscribe to"} ${sourceTitle(source)}`}
+                      aria-pressed={source.subscribed}
+                      onClick={() => toggleSubscription(source)}
+                      disabled={isPending(`${source.id}:subscription`)}
+                    >
+                      <span className="switchKnob" aria-hidden="true" />
+                      <span className="switchText">
+                        {isPending(`${source.id}:subscription`) ? "saving" : source.subscribed ? "subscribed" : "available"}
+                      </span>
+                    </button>
+                    <button className="button compact" title="Preview source" onClick={() => preview(source)} disabled={isPending(`${source.id}:preview`)}>
+                      <Eye size={16} />
+                      {isPending(`${source.id}:preview`) ? "Previewing..." : "Preview"}
+                    </button>
+                    <button className="button compact" title="Fetch now" onClick={() => fetchNow(source)} disabled={!source.subscribed || isPending(`${source.id}:fetch`)}>
+                      <Play size={16} />
+                      {isPending(`${source.id}:fetch`) ? "Queueing..." : "Fetch now"}
+                    </button>
                   </div>
-                  <div className="field">
-                    <label htmlFor="source-edit-fulltext-json">Fulltext JSON</label>
-                    <textarea id="source-edit-fulltext-json" value={editForm.fulltext_json} onChange={(event) => setEditForm({ ...editForm, fulltext_json: event.target.value })} />
-                  </div>
-                </div>
-                <div className="actions">
-                  <button className="button primary" onClick={() => saveEdit(source)} disabled={isPending(`${source.id}:edit`)}>
-                    <Save size={16} /> Save
-                  </button>
-                  <button className="button" onClick={cancelEdit}>
-                    <X size={16} /> Cancel
-                  </button>
-                </div>
-              </form>
-            )}
-          </article>
+                </article>
+              ))}
+            </div>
+          </section>
         ))}
+        {!visibleSources.length && (
+          <div className="empty">
+            <Search size={22} /> No sources match current filters.
+          </div>
+        )}
       </section>
       {message && <pre className="pre">{message}</pre>}
     </div>
   );
 }
 
-function TextField({ id, label, value, onChange }: { id: string; label: string; value: string; onChange: (value: string) => void }) {
+function SelectFilter({ id, label, value, options, onChange }: { id: string; label: string; value: string; options: string[]; onChange: (value: string) => void }) {
   return (
     <div className="field">
       <label htmlFor={id}>{label}</label>
-      <input id={id} value={value} onChange={(event) => onChange(event.target.value)} />
+      <select id={id} value={value} onChange={(event) => onChange(event.target.value)}>
+        <option value="">All</option>
+        {options.map((option) => (
+          <option value={option} key={option}>{option}</option>
+        ))}
+      </select>
     </div>
   );
 }
 
 function SourceMetadata({ source }: { source: Source }) {
-  const auditStatus = String(source.content_audit?.status || "unknown");
-  const ownership = source.is_builtin ? "Default pack" : "Custom source";
-  const summary = source.auto_summary_enabled ? `Summary auto on, ${source.auto_summary_days || 7}d` : "Summary manual";
-  const attemptLabel = `${source.attempts.length} ${source.attempts.length === 1 ? "attempt" : "attempts"}`;
+  const attemptLabel = `${source.fetch?.attempts?.length || source.attempts?.length || 0} ${(source.fetch?.attempts?.length || source.attempts?.length || 0) === 1 ? "attempt" : "attempts"}`;
+  const summary = source.summary?.auto ? `Summary auto on, ${source.summary.window_days || 7}d` : "Summary manual";
   return (
     <div className="sourceDetails">
       <div className="sourceDescriptor">
         <span className="monoValue">{source.id}</span>
-        <span>{source.content_type}</span>
+        <span>{source.kind || source.content_type}</span>
         <span>{source.platform || "unknown platform"}</span>
-        <span>{source.group || "General"}</span>
+        <span>{sourceGroupName(source)}</span>
       </div>
       <div className="sourceFacts">
-        <span>{ownership}</span>
-        <span>Pipeline {auditStatus}</span>
+        <span>{source.catalog_file || (source.is_builtin ? "Catalog" : "Custom")}</span>
+        <span>{source.language || source.language_hint || "auto"}</span>
         <span>{summary}</span>
         <span>{attemptLabel}</span>
       </div>
@@ -394,7 +281,7 @@ function SourceMetadata({ source }: { source: Source }) {
 }
 
 function SourceRunStatus({ source }: { source: Source }) {
-  const latest = latestRunParts(source.latest_run);
+  const latest = latestRunParts(source.latest_run, source.runtime);
   return (
     <div className={`sourceRunStatus ${latest.tone}`} title={latest.title}>
       <div className="sourceRunHead">
@@ -411,23 +298,16 @@ function SourceRunStatus({ source }: { source: Source }) {
   );
 }
 
-function errorMessage(err: unknown) {
-  return err instanceof Error ? err.message : String(err);
-}
-
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function latestRunParts(run: Record<string, unknown> | null | undefined) {
+function latestRunParts(run: Record<string, unknown> | null | undefined, runtime: Source["runtime"]) {
   if (!run) {
+    const lastError = runtime?.last_error || "";
     return {
-      status: "never",
-      tone: "warn",
-      detail: "No runs yet",
-      timeLabel: "Never fetched",
-      title: "This source has not been fetched yet.",
-      error: "",
+      status: lastError ? "attention" : "never",
+      tone: lastError ? "bad" : "warn",
+      detail: lastError ? `${runtime?.failure_count || 0} failures` : "No runs yet",
+      timeLabel: runtime?.last_run_at ? relativeTime(parseApiDate(runtime.last_run_at)) : "Never fetched",
+      title: lastError || "This source has not been fetched yet.",
+      error: truncate(lastError, 140),
     };
   }
   const status = typeof run.status === "string" ? run.status : "unknown";
@@ -438,12 +318,11 @@ function latestRunParts(run: Record<string, unknown> | null | undefined) {
   const timestamp = finishedAt || startedAt;
   const runDate = parseApiDate(timestamp);
   const tone = status === "succeeded" ? "good" : status === "failed" ? "bad" : "warn";
-  const detail = status === "succeeded" ? `${rawCount} fetched, ${itemCount} new` : `${rawCount} fetched, ${itemCount} new`;
   const errorMessage = typeof run.error_message === "string" ? run.error_message : "";
   return {
     status,
     tone,
-    detail,
+    detail: `${rawCount} fetched, ${itemCount} new`,
     timeLabel: relativeTime(runDate),
     title: runDate ? runDate.toLocaleString() : "No timestamp recorded.",
     error: status === "failed" ? truncate(errorMessage, 140) : "",
@@ -483,41 +362,22 @@ function truncate(value: string, length: number) {
   return `${value.slice(0, length - 3)}...`;
 }
 
-function parseCsv(value: string) {
-  return value.split(",").map((item) => item.trim()).filter(Boolean);
+function sourceGroupName(source: Source) {
+  return source.group || "Other";
 }
 
-function parsePositiveInteger(value: string, label: string) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`${label} must be a non-negative integer`);
-  return parsed;
+function sourceTitle(source: Source) {
+  return source.title || source.name || source.id;
 }
 
-function parseAtLeastOne(value: string, label: string) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed < 1) throw new Error(`${label} must be at least 1`);
-  return parsed;
+function slugify(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "other";
 }
 
-function parseObject(value: string, label: string) {
-  const parsed = JSON.parse(value);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${label} must be a JSON object`);
-  return parsed as Record<string, unknown>;
+function uniqueSorted(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b));
 }
 
-function parseAttempts(value: string) {
-  const parsed = JSON.parse(value);
-  if (!Array.isArray(parsed)) throw new Error("attempts must be a JSON array");
-  return parsed.map((attempt) => {
-    const row = attempt as SourceAttempt;
-    return {
-      kind: row.kind || "direct",
-      adapter: row.adapter || "feed",
-      url: row.url || "",
-      route: row.route || "",
-      priority: Number(row.priority || 0),
-      enabled: row.enabled !== false,
-      config: row.config || {},
-    };
-  });
+function errorMessage(err: unknown) {
+  return err instanceof Error ? err.message : String(err);
 }

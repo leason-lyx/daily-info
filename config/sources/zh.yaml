@@ -1,0 +1,23 @@
+schema_version: 1
+sources:
+  - id: juya-ai-daily
+    title: 橘鸦AI早报
+    kind: blog
+    platform: juya
+    homepage: https://imjuya.github.io/juya-ai-daily/
+    group: AI News
+    language: zh-CN
+    tags: [ai-daily, zh]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://imjuya.github.io/juya-ai-daily/rss.xml
+    fulltext:
+      mode: feed_only
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none

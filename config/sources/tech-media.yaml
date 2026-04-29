@@ -1,0 +1,140 @@
+schema_version: 1
+sources:
+  - id: mit-technology-review-ai
+    title: MIT Technology Review AI
+    kind: blog
+    platform: mit-technology-review
+    homepage: https://www.technologyreview.com/topic/artificial-intelligence/
+    group: Tech Media
+    language: en
+    tags: [media, ai]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://www.technologyreview.com/topic/artificial-intelligence/feed/
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
+  - id: the-verge-tech
+    title: The Verge Tech
+    kind: blog
+    platform: the-verge
+    homepage: https://www.theverge.com/tech
+    group: Tech Media
+    language: en
+    tags: [media, tech]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://www.theverge.com/rss/tech/index.xml
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
+  - id: techcrunch-ai
+    title: TechCrunch AI
+    kind: blog
+    platform: techcrunch
+    homepage: https://techcrunch.com/category/artificial-intelligence/
+    group: Tech Media
+    language: en
+    tags: [media, ai]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://techcrunch.com/category/artificial-intelligence/feed/
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
+  - id: ars-technica-ai
+    title: Ars Technica AI
+    kind: blog
+    platform: ars-technica
+    homepage: https://arstechnica.com/ai/
+    group: Tech Media
+    language: en
+    tags: [media, ai]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://arstechnica.com/ai/feed/
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
+  - id: wired-ai
+    title: WIRED AI
+    kind: blog
+    platform: wired
+    homepage: https://www.wired.com/tag/artificial-intelligence/
+    group: Tech Media
+    language: en
+    tags: [media, ai]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://www.wired.com/feed/tag/ai/latest/rss
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
+  - id: 404-media
+    title: 404 Media
+    kind: blog
+    platform: 404-media
+    homepage: https://www.404media.co/
+    group: Tech Media
+    language: en
+    tags: [media, tech]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://www.404media.co/rss/
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none

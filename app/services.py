@@ -10,8 +10,10 @@ from app.catalog import ARXIV_CS_AI_API_URL, ARXIV_CS_CL_API_URL, ARXIV_CS_SE_AP
 from app.config import Settings
 from app.fulltext import extract_generic_article, strip_html
 from app.config import get_settings
-from app.models import Fulltext, Item, Job, JobStatus, RawEntry, Setting, Source, SourceAttempt, SourceRun, Summary, SummaryStatus, utcnow
-from app.schemas import ItemOut, SourceAttemptIn, SourceAttemptOut, SourceIn, SourceOut, SourcePatch
+from app.models import Fulltext, Item, Job, JobStatus, RawEntry, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
+from app.schemas import ItemOut, SourceAttemptIn, SourceAttemptOut, SourceDefinitionIn, SourceDefinitionOut, SourceOut, SourcePatch, SourceRuntimeOut, SourceIn
+from app.source_catalog import definition_from_source, sync_source_catalog, upsert_source_definition
+from app.subscriptions import subscribed_source_ids
 from app.utils import canonicalize_url, dumps, extract_entities, loads, stable_hash, text_matches
 
 
@@ -69,6 +71,56 @@ def source_to_out(source: Source, latest_run: SourceRun | None = None) -> Source
         stability_level=source.stability_level,
         latest_run=run_to_dict(latest_run) if latest_run else None,
         content_audit=content_audit_for_source(source, latest_run),
+    )
+
+
+def source_definition_to_out(source: Source, latest_run: SourceRun | None = None, stats: dict[str, Any] | None = None) -> SourceDefinitionOut:
+    definition = definition_from_source(source)
+    subscription = source.subscription
+    runtime = source.runtime
+    subscribed = bool(subscription and subscription.subscribed)
+    attempts = [
+        SourceAttemptIn(
+            kind=attempt.kind,
+            adapter=attempt.adapter,
+            url=attempt.url,
+            route=attempt.route,
+            priority=attempt.priority,
+            enabled=attempt.enabled,
+            config=loads(attempt.config, {}),
+        )
+        for attempt in source.attempts
+    ]
+    return SourceDefinitionOut(
+        **definition.model_dump(),
+        subscribed=subscribed,
+        runtime=SourceRuntimeOut(
+            last_run_at=runtime.last_run_at,
+            last_success_at=runtime.last_success_at,
+            failure_count=runtime.failure_count,
+            empty_count=runtime.empty_count,
+            last_error=runtime.last_error,
+        )
+        if runtime
+        else None,
+        latest_run=run_to_dict(latest_run) if latest_run else None,
+        content_audit=content_audit_for_source(source, latest_run, stats),
+        spec_hash=source.spec_hash,
+        catalog_file=source.catalog_file,
+        name=definition.title,
+        content_type=definition.kind,
+        homepage_url=definition.homepage,
+        enabled=subscribed,
+        is_builtin=source.is_builtin,
+        language_hint=definition.language,
+        default_tags=definition.tags,
+        include_keywords=definition.filters.include_keywords,
+        exclude_keywords=definition.filters.exclude_keywords,
+        attempts=attempts,
+        auto_summary_enabled=bool(definition.summary.auto if definition.summary else False),
+        auto_summary_days=int(definition.summary.window_days if definition.summary else 7),
+        auth_mode=definition.auth.mode,
+        stability_level=definition.stability,
     )
 
 
@@ -140,15 +192,15 @@ def run_to_dict(run: SourceRun | None) -> dict[str, Any] | None:
 
 
 def content_audit_for_source(source: Source, latest_run: SourceRun | None = None, stats: dict[str, Any] | None = None) -> dict[str, Any]:
-    fulltext_config = loads(source.fulltext, {"strategy": "feed_field"})
+    fulltext_config = loads(source.fulltext, {"mode": "feed_only"})
+    mode = _fulltext_mode(fulltext_config)
     if latest_run and latest_run.status == "failed":
         status = "fetch_failed"
     elif not latest_run and not stats:
         status = "fetch_failed"
-    elif source.content_type == "paper":
+    elif source.content_type == "paper" and mode == "feed_only":
         status = "paper_abstract_only"
     elif stats:
-        strategy = fulltext_config.get("strategy", "feed_field")
         detail_count = int(stats.get("detail_count") or 0)
         feed_count = int(stats.get("feed_count") or 0)
         item_count = int(stats.get("item_count") or 0)
@@ -162,7 +214,7 @@ def content_audit_for_source(source: Source, latest_run: SourceRun | None = None
             and latest_run.status == "succeeded"
             and latest_run.raw_count
             and latest_run.fulltext_success_count / latest_run.raw_count >= 0.6
-            and strategy == "feed_field"
+            and mode == "feed_only"
         ):
             status = "feed_fulltext"
         elif detail_count > 0 and max_raw_len >= 800:
@@ -173,22 +225,21 @@ def content_audit_for_source(source: Source, latest_run: SourceRun | None = None
             status = "feed_title_only"
         else:
             status = "feed_summary_only"
-    elif fulltext_config.get("strategy") in {"generic_article", "feed_or_detail"}:
+    elif mode in {"detail_only", "feed_then_detail"}:
         status = "detail_fulltext"
     else:
         status = "feed_summary_only"
     return {
         "status": status,
-        "strategy": fulltext_config.get("strategy", "feed_field"),
-        "min_feed_fulltext_chars": fulltext_config.get("min_feed_fulltext_chars"),
-        "max_fulltext_per_run": fulltext_config.get("max_fulltext_per_run"),
+        "strategy": fulltext_config.get("strategy", mode),
+        "mode": mode,
+        "min_feed_fulltext_chars": fulltext_config.get("min_feed_chars", fulltext_config.get("min_feed_fulltext_chars")),
+        "max_fulltext_per_run": fulltext_config.get("max_detail_pages_per_run", fulltext_config.get("max_fulltext_per_run")),
     }
 
 
 def sync_default_source_pack(db: Session) -> None:
-    cleanup_retired_sources(db, load_retired_source_ids(DEFAULT_SOURCE_PACK_PATH))
-    sync_source_pack(db, load_source_pack(DEFAULT_SOURCE_PACK_PATH), builtin=True)
-    db.commit()
+    sync_source_catalog(db)
 
 
 def seed_builtin_sources(db: Session) -> None:
@@ -549,6 +600,32 @@ def list_sources(db: Session) -> list[SourceOut]:
     ]
 
 
+def list_source_definitions(db: Session) -> list[SourceDefinitionOut]:
+    runs = latest_runs(db)
+    stats = source_content_stats(db)
+    sources = (
+        db.execute(
+            select(Source)
+            .options(selectinload(Source.attempts), selectinload(Source.subscription), selectinload(Source.runtime))
+            .order_by(Source.group, Source.priority, Source.name)
+        )
+        .scalars()
+        .all()
+    )
+    return [source_definition_to_out(source, runs.get(source.id), stats.get(source.id)) for source in sources]
+
+
+def create_source_definition(db: Session, definition: SourceDefinitionIn, subscribe: bool = True) -> SourceDefinitionOut:
+    if db.get(Source, definition.id):
+        raise ValueError("Source id already exists")
+    source = upsert_source_definition(db, definition, catalog_file="custom", builtin=False)
+    if subscribe:
+        db.add(SourceSubscription(source_id=source.id, subscribed=True))
+    db.commit()
+    db.refresh(source)
+    return source_definition_to_out(source)
+
+
 def queue_job(db: Session, job_type: str, payload: dict[str, Any], max_attempts: int = 3) -> Job:
     existing = db.execute(
         select(Job).where(
@@ -626,7 +703,11 @@ def _prepare_auto_summary_item(db: Session, source: Source, item: Item, settings
 def queue_auto_summaries(db: Session, settings: Settings, source_id: str | None = None, limit: int = 20) -> int:
     if not settings.llm_configured or limit <= 0:
         return 0
-    source_stmt = select(Source).where(Source.auto_summary_enabled.is_(True))
+    source_stmt = (
+        select(Source)
+        .join(SourceSubscription, SourceSubscription.source_id == Source.id)
+        .where(Source.auto_summary_enabled.is_(True), SourceSubscription.subscribed.is_(True))
+    )
     if source_id:
         source_stmt = source_stmt.where(Source.id == source_id)
     sources = db.execute(source_stmt.order_by(Source.group, Source.priority)).scalars().all()
@@ -725,6 +806,7 @@ def query_items(
     source_id: list[str] | None = None,
     source_group: str | None = None,
     platform: str | None = None,
+    include_unsubscribed: bool = False,
     q: str | None = None,
     since: str | None = None,
     summary_status: str | None = None,
@@ -736,6 +818,11 @@ def query_items(
 ) -> tuple[list[Item], int]:
     stmt: Select = select(Item)
     filters = []
+    if not include_unsubscribed:
+        subscribed_ids = subscribed_source_ids(db)
+        if not subscribed_ids:
+            return [], 0
+        filters.append(Item.source_id.in_(subscribed_ids))
     if content_type:
         filters.append(Item.content_type == content_type)
     if source_id:
@@ -787,9 +874,15 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
     item_count = 0
     fulltext_success = 0
     fulltext_attempts = 0
-    strategy = fulltext_config.get("strategy", "feed_field")
-    fulltext_limit = int(fulltext_config.get("max_fulltext_per_run", 20 if strategy in {"generic_article", "feed_or_detail"} else 0) or 0)
-    min_feed_fulltext_chars = int(fulltext_config.get("min_feed_fulltext_chars", 1200) or 1200)
+    mode = _fulltext_mode(fulltext_config)
+    fulltext_limit = int(
+        fulltext_config.get(
+            "max_detail_pages_per_run",
+            fulltext_config.get("max_fulltext_per_run", 20 if mode in {"detail_only", "feed_then_detail"} else 0),
+        )
+        or 0
+    )
+    min_feed_fulltext_chars = int(fulltext_config.get("min_feed_chars", fulltext_config.get("min_feed_fulltext_chars", 1200)) or 1200)
     for entry in entries:
         text_for_filter = f"{entry.title}\n{entry.summary}\n{entry.content}"
         if not text_matches(text_for_filter, include, exclude):
@@ -840,9 +933,8 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
             item.summary = entry_summary or item.summary
             item.raw_text = raw_text or item.raw_text
             item.published_at = entry.published_at or item.published_at
-        should_fetch_detail = strategy == "generic_article" or (
-            strategy == "feed_or_detail"
-            and source.content_type != "paper"
+        should_fetch_detail = mode == "detail_only" or (
+            mode == "feed_then_detail"
             and item.url
             and _feed_text_needs_detail(raw_text, entry_summary, min_feed_fulltext_chars)
         )
@@ -894,6 +986,17 @@ def _feed_text_needs_detail(raw_text: str, summary: str, min_chars: int) -> bool
     if raw_len < min_chars:
         return True
     return summary_len > 0 and raw_len <= summary_len * 2
+
+
+def _fulltext_mode(config: dict[str, Any]) -> str:
+    if config.get("mode"):
+        return str(config.get("mode"))
+    strategy = config.get("strategy", "feed_field")
+    return {
+        "feed_field": "feed_only",
+        "generic_article": "detail_only",
+        "feed_or_detail": "feed_then_detail",
+    }.get(str(strategy), "feed_only")
 
 
 def export_source_pack(db: Session) -> str:

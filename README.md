@@ -16,7 +16,7 @@ Open:
 
 The default stack uses SQLite at `/data/daily-info.db` inside the API/worker/scheduler containers, backed by the `daily_info_data` Docker volume. It does not require AI keys, Postgres, RSSHub, or cloud services.
 
-Default sources are loaded from `config/source-packs/default.yaml` at startup and then synchronized into the database. The Docker API image copies `config/source-packs`, so Docker Compose uses the same default pack as local development.
+Source definitions are loaded from `config/sources/*.yaml` at startup and synchronized into the database as a catalog. Catalog entries are opt-in: only subscribed sources are scheduled for fetch and shown in the default feed. The Docker API image copies `config`, so Docker Compose uses the same catalog as local development.
 
 Secrets belong in `.env` or `.env.local`, not in source packs. The Docker build context excludes `.env.*` files except the checked-in example templates.
 
@@ -83,7 +83,7 @@ npm run start
 ## MVP surface
 
 - Unified feed with type, source, time, search, summary status, read/star/hidden filters.
-- Source Registry with default-pack and custom rows using the same source config shape.
+- Source Catalog with many configured sources and saved subscriptions for the default feed.
 - `/sources/new` supports RSS/Atom, RSSHub route, and HTML fallback preview before save.
 - `/health` separates source fetch health, fulltext health, summary state, job state and AI provider status.
 - Optional OpenAI-compatible and Codex CLI summary provider boundaries.

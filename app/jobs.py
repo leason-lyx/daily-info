@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.adapters import AdapterError, run_attempt
 from app.config import Settings, get_settings
 from app.db import SessionLocal
-from app.models import Item, Job, JobStatus, Source, SourceRun, Summary, SummaryStatus, utcnow
+from app.models import Item, Job, JobStatus, Source, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
 from app.services import load_runtime_settings, persist_entries, queue_auto_summaries, queue_job, reconcile_auto_summary_statuses
 from app.summary import content_hash, summarize_item
 from app.utils import dumps, loads
@@ -24,16 +24,32 @@ def _aware(dt: datetime | None) -> datetime | None:
 
 async def fetch_source_job(db: Session, source_id: str, settings: Settings) -> SourceRun:
     source = db.execute(select(Source).options(selectinload(Source.attempts)).where(Source.id == source_id)).scalar_one()
+    subscription = db.get(SourceSubscription, source.id)
     run = SourceRun(source_id=source.id, status="running")
+    runtime = db.get(SourceRuntime, source.id)
+    if not runtime:
+        runtime = SourceRuntime(source_id=source.id)
+        db.add(runtime)
+    runtime.last_run_at = utcnow()
     db.add(run)
     db.commit()
     errors: list[str] = []
+    if not subscription or not subscription.subscribed:
+        run.status = "skipped"
+        run.error_code = "not_subscribed"
+        run.error_message = "Source is not subscribed."
+        run.finished_at = utcnow()
+        runtime.last_error = run.error_message
+        db.commit()
+        return run
     attempts = [a for a in source.attempts if a.enabled]
     if not attempts:
         run.status = "failed"
         run.error_code = "no_attempts_enabled"
         run.error_message = "No enabled attempts for this source."
         run.finished_at = utcnow()
+        runtime.failure_count += 1
+        runtime.last_error = run.error_message
         db.commit()
         return run
     for attempt in attempts:
@@ -51,6 +67,14 @@ async def fetch_source_job(db: Session, source_id: str, settings: Settings) -> S
             run.used_attempt_id = attempt.id
             run.used_rsshub_instance = result.used_rsshub_instance or ""
             run.finished_at = utcnow()
+            if run.status == "succeeded":
+                runtime.last_success_at = run.finished_at
+                runtime.failure_count = 0
+                runtime.empty_count = 0
+                runtime.last_error = ""
+            else:
+                runtime.empty_count += 1
+                runtime.last_error = "No entries matched this source's filters."
             db.commit()
             return run
         except AdapterError as exc:
@@ -61,6 +85,8 @@ async def fetch_source_job(db: Session, source_id: str, settings: Settings) -> S
     run.error_code = "all_attempts_failed"
     run.error_message = "\n".join(errors)[-4000:]
     run.finished_at = utcnow()
+    runtime.failure_count += 1
+    runtime.last_error = run.error_message
     db.commit()
     return run
 
@@ -215,7 +241,12 @@ async def worker_loop() -> None:
 def schedule_due_sources(db: Session) -> int:
     now = datetime.now(timezone.utc)
     scheduled = 0
-    for source in db.execute(select(Source).where(Source.enabled.is_(True))).scalars():
+    stmt = (
+        select(Source)
+        .join(SourceSubscription, SourceSubscription.source_id == Source.id)
+        .where(SourceSubscription.subscribed.is_(True))
+    )
+    for source in db.execute(stmt).scalars():
         latest = db.execute(
             select(SourceRun).where(SourceRun.source_id == source.id).order_by(SourceRun.started_at.desc()).limit(1)
         ).scalar_one_or_none()

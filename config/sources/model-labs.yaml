@@ -1,0 +1,166 @@
+schema_version: 1
+sources:
+  - id: openai-news
+    title: OpenAI News
+    kind: blog
+    platform: openai
+    homepage: https://openai.com/news/
+    group: Model Labs
+    language: en
+    tags: [openai]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: rsshub
+          route: /openai/news?limit=20
+          timeout_seconds: 12
+    fulltext:
+      mode: feed_only
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
+  - id: openai-research
+    title: OpenAI Research
+    kind: blog
+    platform: openai
+    homepage: https://openai.com/research/
+    group: Model Labs
+    language: en
+    tags: [openai, research]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: rsshub
+          route: /openai/research?limit=20
+          timeout_seconds: 12
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
+  - id: anthropic-news
+    title: Anthropic News
+    kind: blog
+    platform: anthropic
+    homepage: https://www.anthropic.com/news
+    group: Model Labs
+    language: en
+    tags: [anthropic]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: rsshub
+          route: /anthropic/news?limit=20
+          timeout_seconds: 12
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
+  - id: anthropic-research
+    title: Anthropic Research
+    kind: blog
+    platform: anthropic
+    homepage: https://www.anthropic.com/research
+    group: Model Labs
+    language: en
+    tags: [anthropic, research]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: rsshub
+          route: /anthropic/research?limit=20
+          timeout_seconds: 12
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
+  - id: anthropic-engineering
+    title: Anthropic Engineering
+    kind: blog
+    platform: anthropic
+    homepage: https://www.anthropic.com/engineering
+    group: Model Labs
+    language: en
+    tags: [anthropic, engineering]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: rsshub
+          route: /anthropic/engineering?limit=20
+          timeout_seconds: 12
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
+  - id: google-ai-blog
+    title: Google AI Blog
+    kind: blog
+    platform: google
+    homepage: https://blog.google/technology/ai/
+    group: Model Labs
+    language: en
+    tags: [google, ai]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://blog.google/innovation-and-ai/technology/ai/rss/
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
+  - id: google-deepmind-blog
+    title: Google DeepMind Blog
+    kind: blog
+    platform: google-deepmind
+    homepage: https://blog.google/technology/google-deepmind/
+    group: Model Labs
+    language: en
+    tags: [google, deepmind, research]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://blog.google/innovation-and-ai/models-and-research/google-deepmind/rss/
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none

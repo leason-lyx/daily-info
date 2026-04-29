@@ -174,7 +174,7 @@ def test_fetch_run_counts_only_new_summary_jobs_for_source(tmp_path: Path) -> No
         from app.adapters import RawEntryData
         from app.db import SessionLocal, init_db
         from app.jobs import fetch_source_job
-        from app.models import Item, Source, SourceAttempt, SummaryStatus
+        from app.models import Item, Source, SourceAttempt, SourceSubscription, SummaryStatus
         from app.services import queue_job
         from app.config import get_settings
         from app.utils import dumps
@@ -202,6 +202,7 @@ def test_fetch_run_counts_only_new_summary_jobs_for_source(tmp_path: Path) -> No
             target.attempts = [SourceAttempt(kind="direct", adapter="manual", enabled=True)]
             db.add_all([other, target])
             db.flush()
+            db.add(SourceSubscription(source_id="target", subscribed=True))
             existing = Item(
                 source_id="other",
                 canonical_url="https://example.com/other",
@@ -257,7 +258,7 @@ def test_queue_auto_summaries_skips_items_with_active_summary_jobs(tmp_path: Pat
 
         from app.config import get_settings
         from app.db import SessionLocal, init_db
-        from app.models import Item, Job, JobStatus, Source, SummaryStatus
+        from app.models import Item, Job, JobStatus, Source, SourceSubscription, SummaryStatus
         from app.services import queue_auto_summaries
         from app.utils import dumps
 
@@ -274,6 +275,7 @@ def test_queue_auto_summaries_skips_items_with_active_summary_jobs(tmp_path: Pat
             )
             db.add(source)
             db.flush()
+            db.add(SourceSubscription(source_id="target", subscribed=True))
             active_items = []
             now = datetime.now(timezone.utc)
             for index, status in enumerate([JobStatus.queued.value, JobStatus.running.value, JobStatus.retrying.value]):
@@ -535,6 +537,70 @@ def test_default_pack_adds_ai_and_tech_media_sources(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_catalog_sources_are_opt_in_subscriptions(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from sqlalchemy import func, select
+
+        from app.db import SessionLocal, init_db
+        from app.jobs import schedule_due_sources
+        from app.models import Job, SourceSubscription
+        from app.services import list_source_definitions, sync_default_source_pack
+        from app.subscriptions import subscribe_source
+
+        init_db()
+        with SessionLocal() as db:
+            sync_default_source_pack(db)
+            definitions = list_source_definitions(db)
+            assert len(definitions) >= 10
+            assert {definition.id for definition in definitions} >= {"openai-news", "juya-ai-daily", "arxiv-cs-ai"}
+            assert all(not definition.subscribed for definition in definitions)
+            assert db.execute(select(func.count()).select_from(SourceSubscription)).scalar_one() == 0
+            assert schedule_due_sources(db) == 0
+            subscribe_source(db, "juya-ai-daily")
+            definitions = {definition.id: definition for definition in list_source_definitions(db)}
+            assert definitions["juya-ai-daily"].subscribed is True
+            assert schedule_due_sources(db) == 1
+            assert db.execute(select(func.count()).select_from(Job).where(Job.type == "fetch_source")).scalar_one() == 1
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "catalog-subscriptions.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_feed_defaults_to_subscribed_sources(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from app.db import SessionLocal, init_db
+        from app.models import Item, Source, SourceSubscription
+        from app.services import query_items
+
+        init_db()
+        with SessionLocal() as db:
+            db.add_all([
+                Source(id="subscribed", name="Subscribed", content_type="blog", platform="test"),
+                Source(id="available", name="Available", content_type="blog", platform="test"),
+                SourceSubscription(source_id="subscribed", subscribed=True),
+            ])
+            db.flush()
+            db.add_all([
+                Item(source_id="subscribed", canonical_url="https://example.com/sub", title="Subscribed item", url="https://example.com/sub", content_type="blog", platform="test", source_name="Subscribed"),
+                Item(source_id="available", canonical_url="https://example.com/available", title="Available item", url="https://example.com/available", content_type="blog", platform="test", source_name="Available"),
+            ])
+            db.commit()
+            items, total = query_items(db)
+            assert total == 1
+            assert items[0].source_id == "subscribed"
+            items, total = query_items(db, include_unsubscribed=True)
+            assert total == 2
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "feed-subscriptions.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_export_source_pack_strips_runtime_identity(tmp_path: Path) -> None:
     result = run_python(
         """
@@ -698,6 +764,92 @@ def test_builtin_arxiv_cs_cl_legacy_attempt_syncs_to_api_url(tmp_path: Path) -> 
         print("ok")
         """,
         sqlite_url(tmp_path / "builtin-cs-cl-sync.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_sqlite_migration_preserves_enabled_sources_as_subscriptions(tmp_path: Path) -> None:
+    db_path = tmp_path / "enabled-source-upgrade.db"
+    result = run_python(
+        f"""
+        import sqlite3
+
+        conn = sqlite3.connect({str(db_path)!r})
+        conn.executescript(
+            '''
+            CREATE TABLE sources (
+                id VARCHAR(80) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                content_type VARCHAR(20) NOT NULL,
+                platform VARCHAR(80),
+                homepage_url TEXT,
+                enabled BOOLEAN,
+                is_builtin BOOLEAN,
+                "group" VARCHAR(120),
+                priority INTEGER,
+                poll_interval INTEGER,
+                language_hint VARCHAR(20),
+                include_keywords TEXT,
+                exclude_keywords TEXT,
+                default_tags TEXT,
+                created_at DATETIME,
+                updated_at DATETIME,
+                PRIMARY KEY (id)
+            );
+            INSERT INTO sources (
+                id, name, content_type, platform, homepage_url, enabled, is_builtin,
+                "group", priority, poll_interval, language_hint, include_keywords,
+                exclude_keywords, default_tags, created_at, updated_at
+            ) VALUES
+                ('enabled-source', 'Enabled Source', 'blog', 'test', '', 1, 0, 'Blogs', 100, 3600, 'auto', '[]', '[]', '[]', '2026-01-01T00:00:00', '2026-01-01T00:00:00'),
+                ('disabled-source', 'Disabled Source', 'blog', 'test', '', 0, 0, 'Blogs', 101, 3600, 'auto', '[]', '[]', '[]', '2026-01-01T00:00:00', '2026-01-01T00:00:00');
+            '''
+        )
+        conn.close()
+
+        from app.db import SessionLocal, init_db
+        from app.models import SourceSubscription
+
+        init_db()
+        with SessionLocal() as db:
+            enabled = db.get(SourceSubscription, "enabled-source")
+            disabled = db.get(SourceSubscription, "disabled-source")
+            assert enabled is not None
+            assert enabled.subscribed is True
+            assert disabled is None
+        print("ok")
+        """,
+        sqlite_url(db_path),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_html_index_adapter_uses_timeout_config(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+
+        from app.adapters import AdapterResult, HtmlIndexAdapter
+        import app.adapters as adapters
+        from app.models import SourceAttempt
+        from app.utils import dumps
+
+        seen = {}
+
+        async def fake_fetch_html_index(url: str, timeout: int = 20) -> AdapterResult:
+            seen["url"] = url
+            seen["timeout"] = timeout
+            return AdapterResult(entries=[])
+
+        adapters.fetch_html_index = fake_fetch_html_index
+        attempt = SourceAttempt(adapter="html_index", url="https://example.com", config=dumps({"timeout_seconds": 7}))
+
+        asyncio.run(HtmlIndexAdapter().fetch(attempt, settings=None))
+
+        assert seen == {"url": "https://example.com", "timeout": 7}
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "html-index-timeout.db"),
     )
     assert result.stdout.strip() == "ok"
 

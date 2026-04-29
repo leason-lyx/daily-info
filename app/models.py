@@ -55,6 +55,12 @@ class Source(Base):
     exclude_keywords: Mapped[str] = mapped_column(Text, default="[]")
     default_tags: Mapped[str] = mapped_column(Text, default="[]")
     fulltext: Mapped[str] = mapped_column(Text, default='{"strategy":"feed_field"}')
+    fetch: Mapped[str] = mapped_column(Text, default="{}")
+    summary: Mapped[str] = mapped_column(Text, default="{}")
+    auth: Mapped[str] = mapped_column(Text, default='{"mode":"none"}')
+    spec_json: Mapped[str] = mapped_column(Text, default="{}")
+    spec_hash: Mapped[str] = mapped_column(String(64), default="")
+    catalog_file: Mapped[str] = mapped_column(Text, default="")
     auth_mode: Mapped[str] = mapped_column(String(40), default="none")
     stability_level: Mapped[str] = mapped_column(String(40), default="stable")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -65,6 +71,38 @@ class Source(Base):
     )
     items: Mapped[list["Item"]] = relationship(back_populates="source")
     runs: Mapped[list["SourceRun"]] = relationship(back_populates="source")
+    subscription: Mapped["SourceSubscription"] = relationship(back_populates="source", cascade="all, delete-orphan")
+    runtime: Mapped["SourceRuntime"] = relationship(back_populates="source", cascade="all, delete-orphan")
+
+
+class SourceSubscription(Base):
+    __tablename__ = "source_subscriptions"
+
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True)
+    subscribed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    priority_override: Mapped[int | None] = mapped_column(Integer)
+    settings_override: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    source: Mapped[Source] = relationship(back_populates="subscription")
+
+
+class SourceRuntime(Base):
+    __tablename__ = "source_runtimes"
+
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    failure_count: Mapped[int] = mapped_column(Integer, default=0)
+    empty_count: Mapped[int] = mapped_column(Integer, default=0)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    etag: Mapped[str] = mapped_column(Text, default="")
+    last_modified: Mapped[str] = mapped_column(Text, default="")
+    cursor: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    source: Mapped[Source] = relationship(back_populates="runtime")
 
 
 class SourceAttempt(Base):

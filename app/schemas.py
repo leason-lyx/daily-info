@@ -14,6 +14,123 @@ class SourceAttemptIn(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
+class FetchAttemptIn(BaseModel):
+    adapter: Literal["feed", "rsshub", "html_index"]
+    url: str = ""
+    route: str = ""
+    timeout_seconds: int = Field(default=20, ge=1, le=120)
+    selectors: list[str] = Field(default_factory=list)
+    limit: int = Field(default=20, ge=1, le=200)
+
+    @model_validator(mode="after")
+    def require_location(self):
+        if self.adapter in {"feed", "html_index"} and not self.url:
+            raise ValueError(f"{self.adapter} attempt requires url")
+        if self.adapter == "rsshub" and not (self.route or self.url):
+            raise ValueError("rsshub attempt requires route or url")
+        return self
+
+
+class FetchConfigIn(BaseModel):
+    strategy: Literal["first_success"] = "first_success"
+    interval_seconds: int = Field(default=3600, ge=60)
+    attempts: list[FetchAttemptIn] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_attempts(self):
+        if not self.attempts:
+            raise ValueError("fetch.attempts must contain at least one attempt")
+        return self
+
+
+class FulltextPolicyIn(BaseModel):
+    mode: Literal["feed_only", "detail_only", "feed_then_detail"] = "feed_only"
+    min_feed_chars: int = Field(default=1200, ge=0)
+    max_detail_pages_per_run: int = Field(default=20, ge=0)
+    selectors: list[str] = Field(default_factory=list)
+    remove_selectors: list[str] = Field(default_factory=list)
+    min_detail_chars: int = Field(default=200, ge=0)
+
+
+class SummaryPolicyIn(BaseModel):
+    auto: bool = False
+    window_days: int = Field(default=7, ge=1)
+
+
+class AuthPolicyIn(BaseModel):
+    mode: str = "none"
+    secret_ref: str = ""
+
+
+class ProcessingFiltersIn(BaseModel):
+    include_keywords: list[str] = Field(default_factory=list)
+    exclude_keywords: list[str] = Field(default_factory=list)
+
+
+class SourceDefinitionIn(BaseModel):
+    id: str
+    title: str
+    kind: Literal["paper", "blog", "post"]
+    platform: str = ""
+    homepage: str = ""
+    language: str = "auto"
+    tags: list[str] = Field(default_factory=list)
+    group: str = "General"
+    priority: int = 100
+    fetch: FetchConfigIn
+    fulltext: FulltextPolicyIn = Field(default_factory=FulltextPolicyIn)
+    summary: SummaryPolicyIn | None = None
+    filters: ProcessingFiltersIn = Field(default_factory=ProcessingFiltersIn)
+    auth: AuthPolicyIn = Field(default_factory=AuthPolicyIn)
+    stability: str = "stable"
+
+    @model_validator(mode="after")
+    def default_summary(self):
+        if self.summary is None:
+            self.summary = SummaryPolicyIn(auto=self.kind in {"blog", "post"})
+        return self
+
+
+class SourceRuntimeOut(BaseModel):
+    last_run_at: datetime | None = None
+    last_success_at: datetime | None = None
+    failure_count: int = 0
+    empty_count: int = 0
+    last_error: str = ""
+
+
+class SourceSubscriptionOut(BaseModel):
+    source_id: str
+    subscribed: bool
+    priority_override: int | None = None
+    settings_override: dict[str, Any] = Field(default_factory=dict)
+
+
+class SourceDefinitionOut(SourceDefinitionIn):
+    subscribed: bool = False
+    runtime: SourceRuntimeOut | None = None
+    latest_run: dict[str, Any] | None = None
+    content_audit: dict[str, Any] = Field(default_factory=dict)
+    spec_hash: str = ""
+    catalog_file: str = ""
+    # Compatibility fields for existing UI surfaces while the frontend moves to
+    # catalog terminology.
+    name: str = ""
+    content_type: Literal["paper", "blog", "post"] = "blog"
+    homepage_url: str = ""
+    enabled: bool = False
+    is_builtin: bool = True
+    language_hint: str = "auto"
+    default_tags: list[str] = Field(default_factory=list)
+    include_keywords: list[str] = Field(default_factory=list)
+    exclude_keywords: list[str] = Field(default_factory=list)
+    attempts: list[SourceAttemptIn] = Field(default_factory=list)
+    auto_summary_enabled: bool = False
+    auto_summary_days: int = 7
+    auth_mode: str = "none"
+    stability_level: str = "stable"
+
+
 class SourceIn(BaseModel):
     id: str
     name: str
@@ -81,6 +198,8 @@ class PreviewRequest(BaseModel):
     route: str | None = None
     adapter: str = "feed"
     content_type: Literal["paper", "blog", "post"] = "blog"
+    attempt: FetchAttemptIn | None = None
+    source: SourceDefinitionIn | None = None
 
 
 class PreviewEntry(BaseModel):

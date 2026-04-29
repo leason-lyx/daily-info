@@ -1,0 +1,65 @@
+schema_version: 1
+sources:
+  - id: arxiv-cs-ai
+    title: arXiv cs.AI
+    kind: paper
+    platform: arxiv
+    homepage: https://arxiv.org/list/cs.AI/recent
+    group: Papers
+    language: en
+    tags: [paper, ai]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://export.arxiv.org/api/query?search_query=cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=50
+    fulltext:
+      mode: feed_only
+    summary:
+      auto: false
+      window_days: 7
+    auth:
+      mode: none
+  - id: arxiv-cs-cl
+    title: arXiv cs.CL
+    kind: paper
+    platform: arxiv
+    homepage: https://arxiv.org/list/cs.CL/recent
+    group: Papers
+    language: en
+    tags: [paper, nlp]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://export.arxiv.org/api/query?search_query=cat:cs.CL&sortBy=submittedDate&sortOrder=descending&max_results=50
+    fulltext:
+      mode: feed_only
+    summary:
+      auto: false
+      window_days: 7
+    auth:
+      mode: none
+  - id: arxiv-cs-se
+    title: arXiv cs.SE
+    kind: paper
+    platform: arxiv
+    homepage: https://arxiv.org/list/cs.SE/recent
+    group: Papers
+    language: en
+    tags: [paper, software-engineering]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://export.arxiv.org/api/query?search_query=cat:cs.SE&sortBy=submittedDate&sortOrder=descending&max_results=50
+    fulltext:
+      mode: feed_only
+    summary:
+      auto: false
+      window_days: 7
+    auth:
+      mode: none
