@@ -197,6 +197,22 @@ export type LlmUsage = {
   last_error?: string;
 };
 
+export type LlmProvider = {
+  id: number;
+  name: string;
+  provider_type: string;
+  base_url: string;
+  model_name: string;
+  temperature: number;
+  timeout: number;
+  enabled: boolean;
+  priority: number;
+  has_api_key: boolean;
+  last_error?: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
 export type AiProviderTestResult = {
   ok: boolean;
   provider: string;

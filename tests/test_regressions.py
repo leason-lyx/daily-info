@@ -165,6 +165,230 @@ def test_sqlite_migration_adds_source_runtime_columns(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_legacy_llm_settings_seed_default_provider(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from sqlalchemy import select
+
+        from app.config import get_settings
+        from app.db import SessionLocal, init_db
+        from app.models import LLMProvider
+        from app.services import ensure_legacy_llm_provider, load_runtime_settings, set_setting_value
+
+        init_db()
+        legacy_settings = get_settings().model_copy(update={
+            "llm_provider_type": "openai_compatible",
+            "llm_base_url": "https://api.example.com/v1",
+            "llm_api_key": "secret",
+            "llm_model_name": "model-a",
+        })
+        with SessionLocal() as db:
+            assert ensure_legacy_llm_provider(db, legacy_settings) is True
+            assert ensure_legacy_llm_provider(db, legacy_settings) is False
+            provider = db.execute(select(LLMProvider)).scalar_one()
+            assert provider.name == "Default API"
+            assert provider.api_key == "secret"
+            set_setting_value(db, "llm_provider_type", "openai_compatible")
+            db.commit()
+            settings = load_runtime_settings(db)
+            assert settings.llm_configured is True
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "legacy-llm-provider.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_settings_saves_multiple_llm_providers_without_exposing_keys(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from fastapi.testclient import TestClient
+        from sqlalchemy import select
+
+        from app.api import app
+        from app.db import SessionLocal, init_db
+        from app.models import LLMProvider
+
+        init_db()
+        with TestClient(app) as client:
+            response = client.patch("/api/settings", json={
+                "llm_provider_type": "openai_compatible",
+                "llm_providers": [
+                    {
+                        "name": "Primary",
+                        "base_url": "https://primary.example.com/v1",
+                        "api_key": "secret-1",
+                        "model_name": "model-a",
+                        "temperature": 0.2,
+                        "timeout": 60,
+                        "enabled": True,
+                        "priority": 0,
+                    },
+                    {
+                        "name": "Backup",
+                        "base_url": "https://backup.example.com/v1",
+                        "api_key": "secret-2",
+                        "model_name": "model-b",
+                        "temperature": 0.1,
+                        "timeout": 30,
+                        "enabled": False,
+                        "priority": 1,
+                    },
+                ],
+            })
+            assert response.status_code == 200, response.text
+            response = client.get("/api/settings")
+            assert response.status_code == 200, response.text
+            data = response.json()
+            providers = data["llm_providers"]
+            assert [provider["name"] for provider in providers] == ["Primary", "Backup"]
+            assert providers[0]["has_api_key"] is True
+            assert "api_key" not in providers[0]
+            assert data["llm_model_name"] == "model-a"
+
+            primary = providers[0]
+            response = client.patch("/api/settings", json={
+                "llm_provider_type": "openai_compatible",
+                "llm_providers": [
+                    {
+                        "id": primary["id"],
+                        "name": "Primary renamed",
+                        "base_url": primary["base_url"],
+                        "api_key": "",
+                        "model_name": primary["model_name"],
+                        "temperature": primary["temperature"],
+                        "timeout": primary["timeout"],
+                        "enabled": True,
+                        "priority": 0,
+                    }
+                ],
+            })
+            assert response.status_code == 200, response.text
+
+        with SessionLocal() as db:
+            providers = db.execute(select(LLMProvider).order_by(LLMProvider.priority)).scalars().all()
+            assert len(providers) == 1
+            assert providers[0].name == "Primary renamed"
+            assert providers[0].api_key == "secret-1"
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "settings-llm-providers.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_openai_summary_falls_back_to_next_enabled_provider(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+
+        from sqlalchemy import select
+
+        from app.db import SessionLocal, init_db
+        from app.jobs import summarize_item_job
+        from app.models import Item, LLMProvider, Source, Summary, SummaryStatus
+        from app.services import load_runtime_settings, set_setting_value
+
+        init_db()
+        with SessionLocal() as db:
+            db.add(Source(id="source", name="Source", content_type="blog", platform="test"))
+            item = Item(
+                source_id="source",
+                canonical_url="https://example.com/item",
+                title="Item",
+                url="https://example.com/item",
+                content_type="blog",
+                platform="test",
+                source_name="Source",
+                raw_text="Enough text for a summary.",
+            )
+            db.add(item)
+            db.add_all([
+                LLMProvider(name="Primary", provider_type="openai_compatible", base_url="https://primary.example.com/v1", api_key="secret-1", model_name="model-a", enabled=True, priority=0),
+                LLMProvider(name="Backup", provider_type="openai_compatible", base_url="https://backup.example.com/v1", api_key="secret-2", model_name="model-b", enabled=True, priority=1),
+            ])
+            set_setting_value(db, "llm_provider_type", "openai_compatible")
+            set_setting_value(db, "llm_providers_initialized", True)
+            db.commit()
+
+            async def fake_summarize(_item, settings):
+                if settings.llm_model_name == "model-a":
+                    raise RuntimeError("primary failed")
+                return {
+                    "data": {"one_sentence": "备用成功", "key_takeaways": ["要点"]},
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                    "duration_ms": 12,
+                }
+
+            import app.jobs
+            app.jobs.summarize_openai_compatible = fake_summarize
+            asyncio.run(summarize_item_job(db, item.id, load_runtime_settings(db)))
+            summaries = db.execute(select(Summary).order_by(Summary.id)).scalars().all()
+            db.refresh(item)
+            assert item.summary_status == SummaryStatus.ready.value
+            assert [summary.status for summary in summaries] == [SummaryStatus.failed.value, SummaryStatus.ready.value]
+            assert [summary.model for summary in summaries] == ["model-a", "model-b"]
+            assert summaries[0].error_message == "primary failed"
+            assert item.summary == "备用成功"
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "summary-provider-fallback.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_openai_summary_marks_failed_when_all_providers_fail(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+
+        from sqlalchemy import select
+
+        from app.db import SessionLocal, init_db
+        from app.jobs import summarize_item_job
+        from app.models import Item, LLMProvider, Source, Summary, SummaryStatus
+        from app.services import load_runtime_settings, set_setting_value
+
+        init_db()
+        with SessionLocal() as db:
+            db.add(Source(id="source", name="Source", content_type="blog", platform="test"))
+            item = Item(
+                source_id="source",
+                canonical_url="https://example.com/item",
+                title="Item",
+                url="https://example.com/item",
+                content_type="blog",
+                platform="test",
+                source_name="Source",
+                raw_text="Enough text for a summary.",
+            )
+            db.add(item)
+            db.add_all([
+                LLMProvider(name="Primary", provider_type="openai_compatible", base_url="https://primary.example.com/v1", api_key="secret-1", model_name="model-a", enabled=True, priority=0),
+                LLMProvider(name="Backup", provider_type="openai_compatible", base_url="https://backup.example.com/v1", api_key="secret-2", model_name="model-b", enabled=True, priority=1),
+            ])
+            set_setting_value(db, "llm_provider_type", "openai_compatible")
+            set_setting_value(db, "llm_providers_initialized", True)
+            db.commit()
+
+            async def fake_summarize(_item, settings):
+                raise RuntimeError(f"{settings.llm_model_name} failed")
+
+            import app.jobs
+            app.jobs.summarize_openai_compatible = fake_summarize
+            asyncio.run(summarize_item_job(db, item.id, load_runtime_settings(db)))
+            summaries = db.execute(select(Summary).order_by(Summary.id)).scalars().all()
+            db.refresh(item)
+            assert item.summary_status == SummaryStatus.failed.value
+            assert [summary.status for summary in summaries] == [SummaryStatus.failed.value, SummaryStatus.failed.value]
+            assert summaries[-1].error_message == "model-b failed"
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "summary-provider-all-failed.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_fetch_run_counts_only_new_summary_jobs_for_source(tmp_path: Path) -> None:
     result = run_python(
         """

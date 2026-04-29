@@ -1,10 +1,11 @@
 # AGENTS.md
 
-Development rules for agents working in this repository.
+本仓库中代理协作开发时需要遵守的规则。
 
-## Development Rules
+## 开发规则
 
-- After every functional code change, agents must actually run the frontend and test the affected behavior in the browser before handing off. Static checks or builds alone are not sufficient.
-- Acceptance testing must use Docker Compose to build/start the app services, so validation covers the same runtime path used by the local deployment.
-- When submitting code changes, agents should default to creating a branch, pushing it, and opening a pull request instead of pushing directly to the default branch, unless the user explicitly asks for a direct push.
-- The user is not deeply familiar with this project's tech stack. If agents see a better implementation path, they should propose it and explain the reasoning instead of silently following a weaker approach.
+- 每次进行功能性代码修改后，代理在交付前都必须实际运行前端，并在浏览器中测试受影响的行为。仅运行静态检查或构建是不够的。
+- 验收测试必须使用 Docker Compose 构建并启动应用服务，以确保验证覆盖与本地部署相同的运行路径。
+- 修改代码后，代理必须检查相关文档，确保文档与代码保持一致；修改文档时，应优先合并既有内容而不是追加重复说明，优先删除过时内容而不是继续保留。
+- 提交代码修改时，除非用户明确要求直接推送到默认分支，否则代理应默认创建分支、推送分支并打开拉取请求，而不是直接推送到默认分支。
+- 用户并不十分熟悉本项目的技术栈。如果代理发现更好的实现路径，应提出该方案并解释原因，而不是默默采用较弱的做法。

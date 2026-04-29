@@ -245,6 +245,35 @@ class ItemListOut(BaseModel):
     total: int
 
 
+class LLMProviderIn(BaseModel):
+    id: int | None = None
+    name: str = "Custom API"
+    provider_type: Literal["openai_compatible"] = "openai_compatible"
+    base_url: str = ""
+    api_key: str | None = None
+    model_name: str = ""
+    temperature: float = 0.2
+    timeout: int = Field(default=60, ge=1, le=300)
+    enabled: bool = False
+    priority: int = 0
+
+
+class LLMProviderOut(BaseModel):
+    id: int
+    name: str
+    provider_type: str
+    base_url: str
+    model_name: str
+    temperature: float
+    timeout: int
+    enabled: bool
+    priority: int
+    has_api_key: bool
+    last_error: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class SettingsOut(BaseModel):
     database_url: str
     rsshub_public_instances: list[str]
@@ -255,6 +284,7 @@ class SettingsOut(BaseModel):
     llm_model_name: str | None = None
     codex_cli_path: str
     codex_cli_model: str | None = None
+    llm_providers: list[LLMProviderOut] = Field(default_factory=list)
     llm_usage: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -267,6 +297,7 @@ class SettingsPatch(BaseModel):
     llm_timeout: int | None = None
     codex_cli_path: str | None = None
     codex_cli_model: str | None = None
+    llm_providers: list[LLMProviderIn] | None = None
 
 
 class AiProviderTestResult(BaseModel):

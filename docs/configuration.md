@@ -56,12 +56,14 @@ RSSHub 是可选增强。系统会按配置的实例顺序尝试 RSSHub route，
 
 默认 `LLM_PROVIDER_TYPE=none`，不会调用外部 AI 服务。
 
-启用 OpenAI-compatible provider 时，需要配置：
+启用 OpenAI-compatible provider 时，可以先通过环境变量提供一组初始配置：
 
 - `LLM_PROVIDER_TYPE=openai_compatible`
 - `LLM_BASE_URL`
 - `LLM_API_KEY`
 - `LLM_MODEL_NAME`
+
+启动后也可以在 `/settings` 中维护多个自定义 API 配置档。每个配置档包含名称、Base URL、模型、API key、temperature、timeout、启用状态和顺序。摘要任务会按启用配置档的顺序调用；当前一个配置失败时，会在同一次摘要任务内立即尝试下一个启用配置。环境变量和旧版 UI settings 会在没有配置档时作为兼容来源生成默认配置档。
 
 启用 Codex CLI provider 时，需要确保运行环境可以访问 Codex CLI，并配置：
 

@@ -116,6 +116,16 @@ def _migrate_sqlite_schema() -> None:
                     _add_sqlite_column(conn, f"ALTER TABLE summaries ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
             if "usage_json" not in summary_columns:
                 _add_sqlite_column(conn, "ALTER TABLE summaries ADD COLUMN usage_json TEXT NOT NULL DEFAULT '{}'")
+        if "llm_providers" in tables:
+            provider_columns = {column["name"] for column in inspector.get_columns("llm_providers")}
+            if "name" not in provider_columns:
+                _add_sqlite_column(conn, "ALTER TABLE llm_providers ADD COLUMN name VARCHAR(120) NOT NULL DEFAULT 'Custom API'")
+            if "api_key" not in provider_columns:
+                _add_sqlite_column(conn, "ALTER TABLE llm_providers ADD COLUMN api_key TEXT NOT NULL DEFAULT ''")
+            if "priority" not in provider_columns:
+                _add_sqlite_column(conn, "ALTER TABLE llm_providers ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+            if "created_at" not in provider_columns:
+                _add_sqlite_column(conn, "ALTER TABLE llm_providers ADD COLUMN created_at DATETIME")
 
 
 def _add_sqlite_column(conn, statement: str) -> None:
