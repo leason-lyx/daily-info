@@ -80,6 +80,9 @@ async def fetch_source_job(db: Session, source_id: str, settings: Settings) -> S
         except AdapterError as exc:
             errors.append(f"{attempt.adapter}: {exc.code} {exc.message}")
         except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            run = db.get(SourceRun, run.id)
+            runtime = db.get(SourceRuntime, source.id)
             errors.append(f"{attempt.adapter}: {type(exc).__name__} {exc}")
     run.status = "failed"
     run.error_code = "all_attempts_failed"
@@ -229,6 +232,7 @@ async def _summarize_item_with_openai_chain(db: Session, item: Item, settings: S
 
 
 async def run_job(db: Session, job: Job, settings: Settings) -> None:
+    job_id = job.id
     job.status = JobStatus.running.value
     job.started_at = utcnow()
     job.attempts += 1
@@ -248,6 +252,10 @@ async def run_job(db: Session, job: Job, settings: Settings) -> None:
         job.error_code = ""
         job.error_message = ""
     except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        job = db.get(Job, job_id)
+        if not job:
+            return
         job.error_code = type(exc).__name__
         job.error_message = str(exc)[-4000:]
         job.finished_at = utcnow()

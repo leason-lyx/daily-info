@@ -72,7 +72,7 @@ Catalog 是显式订阅模式：
 - 只有已订阅 source 会进入默认 Feed。
 - 未订阅 source 仍会显示在 Source Catalog 中，便于发现和开启。
 
-当同一内容出现在多个 source 中时，Daily Info 只保存一条由 `dedupe_key` 标识的 item，并通过 `item_sources` 记录全部来源。Feed 和 API 会通过 `sources[]` 返回这些来源；单个 `source_id/source_name` 仅表示主展示来源和旧客户端兼容字段。
+当同一内容出现在多个 source 中时，Daily Info 只保存一条由 `dedupe_key` 标识的 item，并通过 `item_sources` 记录全部来源。Feed 和 API 会通过 `sources[]` 返回这些来源；单个 `source_id/source_name` 表示主展示来源。
 
 Source definition 可以包含抓取方式、全文策略、摘要策略、过滤规则、标签、分组和元数据。它们应该被视为公开配置，不应包含 API key、cookie、token 或其他 secret。未来如果某个 source 需要认证，catalog 中只保存 secret 引用名，真实 secret 放在运行时配置里。
 

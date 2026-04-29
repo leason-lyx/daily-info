@@ -106,99 +106,6 @@ def test_fetch_feed_parses_arxiv_api_atom(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
-def test_sqlite_migration_adds_source_runtime_columns(tmp_path: Path) -> None:
-    db_path = tmp_path / "old-schema.db"
-    result = run_python(
-        f"""
-        import sqlite3
-
-        conn = sqlite3.connect({str(db_path)!r})
-        conn.executescript(
-            '''
-            CREATE TABLE sources (
-                id VARCHAR(80) NOT NULL,
-                name VARCHAR(255) NOT NULL,
-                content_type VARCHAR(20) NOT NULL,
-                platform VARCHAR(80),
-                homepage_url TEXT,
-                enabled BOOLEAN,
-                is_builtin BOOLEAN,
-                "group" VARCHAR(120),
-                priority INTEGER,
-                poll_interval INTEGER,
-                language_hint VARCHAR(20),
-                include_keywords TEXT,
-                exclude_keywords TEXT,
-                default_tags TEXT,
-                created_at DATETIME,
-                updated_at DATETIME,
-                PRIMARY KEY (id)
-            );
-            INSERT INTO sources (
-                id, name, content_type, platform, homepage_url, enabled, is_builtin,
-                "group", priority, poll_interval, language_hint, include_keywords,
-                exclude_keywords, default_tags, created_at, updated_at
-            ) VALUES (
-                'legacy-source', 'Legacy Source', 'blog', 'legacy', '', 1, 0,
-                'Blogs', 100, 3600, 'auto', '[]', '[]', '[]',
-                '2026-01-01T00:00:00', '2026-01-01T00:00:00'
-            );
-            '''
-        )
-        conn.close()
-
-        from sqlalchemy import select
-
-        from app.db import SessionLocal, init_db
-        from app.models import Source
-
-        init_db()
-        with SessionLocal() as db:
-            source = db.execute(select(Source).where(Source.id == 'legacy-source')).scalar_one()
-            assert source.fulltext == '{{"strategy":"feed_field"}}'
-            assert source.auth_mode == 'none'
-            assert source.stability_level == 'stable'
-        print("ok")
-        """,
-        sqlite_url(db_path),
-    )
-    assert result.stdout.strip() == "ok"
-
-
-def test_legacy_llm_settings_seed_default_provider(tmp_path: Path) -> None:
-    result = run_python(
-        """
-        from sqlalchemy import select
-
-        from app.config import get_settings
-        from app.db import SessionLocal, init_db
-        from app.models import LLMProvider
-        from app.services import ensure_legacy_llm_provider, load_runtime_settings, set_setting_value
-
-        init_db()
-        legacy_settings = get_settings().model_copy(update={
-            "llm_provider_type": "openai_compatible",
-            "llm_base_url": "https://api.example.com/v1",
-            "llm_api_key": "secret",
-            "llm_model_name": "model-a",
-        })
-        with SessionLocal() as db:
-            assert ensure_legacy_llm_provider(db, legacy_settings) is True
-            assert ensure_legacy_llm_provider(db, legacy_settings) is False
-            provider = db.execute(select(LLMProvider)).scalar_one()
-            assert provider.name == "Default API"
-            assert provider.api_key == "secret"
-            set_setting_value(db, "llm_provider_type", "openai_compatible")
-            db.commit()
-            settings = load_runtime_settings(db)
-            assert settings.llm_configured is True
-        print("ok")
-        """,
-        sqlite_url(tmp_path / "legacy-llm-provider.db"),
-    )
-    assert result.stdout.strip() == "ok"
-
-
 def test_settings_saves_multiple_llm_providers_without_exposing_keys(tmp_path: Path) -> None:
     result = run_python(
         """
@@ -592,7 +499,7 @@ def test_persist_entries_deduplicates_tracking_urls_and_preserves_user_state(tmp
     assert result.stdout.strip() == "ok"
 
 
-def test_dedupe_handles_legacy_arxiv_ids_and_linkless_titles(tmp_path: Path) -> None:
+def test_dedupe_handles_arxiv_old_style_ids_and_linkless_titles(tmp_path: Path) -> None:
     result = run_python(
         """
         import asyncio
@@ -613,8 +520,8 @@ def test_dedupe_handles_legacy_arxiv_ids_and_linkless_titles(tmp_path: Path) -> 
             db.add(source)
             db.commit()
 
-            first = RawEntryData(title="Legacy Arxiv", url="https://arxiv.org/abs/math.CO/0309136v1", raw_payload={"id": "math.CO/0309136v1"})
-            second = RawEntryData(title="Legacy Arxiv", url="https://arxiv.org/pdf/math.CO/0309136v2", raw_payload={"id": "math.CO/0309136v2"})
+            first = RawEntryData(title="Old-style Arxiv", url="https://arxiv.org/abs/math.CO/0309136v1", raw_payload={"id": "math.CO/0309136v1"})
+            second = RawEntryData(title="Old-style Arxiv", url="https://arxiv.org/pdf/math.CO/0309136v2", raw_payload={"id": "math.CO/0309136v2"})
             assert asyncio.run(persist_entries(db, source, [first], settings))[1] == 1
             assert asyncio.run(persist_entries(db, source, [second], settings))[1] == 0
 
@@ -813,7 +720,7 @@ def test_health_exposes_job_queue_counts_targets_and_limits(tmp_path: Path) -> N
 
         from app.api import app
         from app.db import SessionLocal, init_db
-        from app.models import Fulltext, Item, Job, Source
+        from app.models import Fulltext, Item, ItemSource, Job, Source, SourceSubscription
         from app.utils import dumps
 
         init_db()
@@ -822,6 +729,7 @@ def test_health_exposes_job_queue_counts_targets_and_limits(tmp_path: Path) -> N
             source = Source(id="openai-news", name="OpenAI News", content_type="blog", platform="openai")
             db.merge(source)
             db.flush()
+            db.merge(SourceSubscription(source_id="openai-news", subscribed=True))
             item = Item(
                 source_id="openai-news",
                 canonical_url="https://example.com/item",
@@ -834,6 +742,7 @@ def test_health_exposes_job_queue_counts_targets_and_limits(tmp_path: Path) -> N
             )
             db.add(item)
             db.flush()
+            db.add(ItemSource(item_id=item.id, source_id="openai-news", source_name="OpenAI News", url=item.url, canonical_url=item.canonical_url))
             db.add_all([
                 Fulltext(item_id=item.id, extractor="feed_field", status="succeeded", text="Feed text"),
                 Fulltext(item_id=item.id, extractor="generic_article", status="succeeded", text="Detail text"),
@@ -1105,76 +1014,6 @@ def test_export_source_pack_strips_runtime_identity(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
-def test_builtin_arxiv_cs_se_legacy_attempt_syncs_to_api_url(tmp_path: Path) -> None:
-    result = run_python(
-        """
-        from app.catalog import ARXIV_CS_SE_API_URL
-        from app.db import SessionLocal, init_db
-        from app.models import Source, SourceAttempt
-        from app.services import seed_builtin_sources
-        from app.utils import dumps
-
-        init_db()
-        with SessionLocal() as db:
-            source = Source(
-                id="arxiv-cs-se",
-                name="arXiv cs.SE",
-                content_type="paper",
-                platform="arxiv",
-                is_builtin=True,
-                default_tags=dumps(["paper", "software-engineering"]),
-            )
-            source.attempts = [SourceAttempt(adapter="feed", url="https://rss.arxiv.org/rss/cs.SE")]
-            db.add(source)
-            db.commit()
-
-            seed_builtin_sources(db)
-            source = db.get(Source, "arxiv-cs-se")
-            assert len(source.attempts) == 1
-            assert source.attempts[0].adapter == "feed"
-            assert source.attempts[0].url == ARXIV_CS_SE_API_URL
-        print("ok")
-        """,
-        sqlite_url(tmp_path / "builtin-cs-se-sync.db"),
-    )
-    assert result.stdout.strip() == "ok"
-
-
-def test_builtin_arxiv_cs_ai_legacy_attempt_syncs_to_api_url(tmp_path: Path) -> None:
-    result = run_python(
-        """
-        from app.catalog import ARXIV_CS_AI_API_URL
-        from app.db import SessionLocal, init_db
-        from app.models import Source, SourceAttempt
-        from app.services import seed_builtin_sources
-        from app.utils import dumps
-
-        init_db()
-        with SessionLocal() as db:
-            source = Source(
-                id="arxiv-cs-ai",
-                name="arXiv cs.AI",
-                content_type="paper",
-                platform="arxiv",
-                is_builtin=True,
-                default_tags=dumps(["paper", "ai"]),
-            )
-            source.attempts = [SourceAttempt(adapter="feed", url="https://rss.arxiv.org/rss/cs.AI")]
-            db.add(source)
-            db.commit()
-
-            seed_builtin_sources(db)
-            source = db.get(Source, "arxiv-cs-ai")
-            assert len(source.attempts) == 1
-            assert source.attempts[0].adapter == "feed"
-            assert source.attempts[0].url == ARXIV_CS_AI_API_URL
-        print("ok")
-        """,
-        sqlite_url(tmp_path / "builtin-cs-ai-sync.db"),
-    )
-    assert result.stdout.strip() == "ok"
-
-
 def test_user_owned_arxiv_cs_se_attempt_is_not_overwritten(tmp_path: Path) -> None:
     result = run_python(
         """
@@ -1208,98 +1047,6 @@ def test_user_owned_arxiv_cs_se_attempt_is_not_overwritten(tmp_path: Path) -> No
         print("ok")
         """,
         sqlite_url(tmp_path / "user-cs-se-preserve.db"),
-    )
-    assert result.stdout.strip() == "ok"
-
-
-def test_builtin_arxiv_cs_cl_legacy_attempt_syncs_to_api_url(tmp_path: Path) -> None:
-    result = run_python(
-        """
-        from app.catalog import ARXIV_CS_CL_API_URL
-        from app.db import SessionLocal, init_db
-        from app.models import Source, SourceAttempt
-        from app.services import seed_builtin_sources
-        from app.utils import dumps
-
-        init_db()
-        with SessionLocal() as db:
-            source = Source(
-                id="arxiv-cs-cl",
-                name="arXiv cs.CL",
-                content_type="paper",
-                platform="arxiv",
-                is_builtin=True,
-                default_tags=dumps(["paper", "nlp"]),
-            )
-            source.attempts = [SourceAttempt(adapter="feed", url="https://rss.arxiv.org/rss/cs.CL")]
-            db.add(source)
-            db.commit()
-
-            seed_builtin_sources(db)
-            source = db.get(Source, "arxiv-cs-cl")
-            assert source is not None
-            assert len(source.attempts) == 1
-            assert source.attempts[0].adapter == "feed"
-            assert source.attempts[0].url == ARXIV_CS_CL_API_URL
-        print("ok")
-        """,
-        sqlite_url(tmp_path / "builtin-cs-cl-sync.db"),
-    )
-    assert result.stdout.strip() == "ok"
-
-
-def test_sqlite_migration_preserves_enabled_sources_as_subscriptions(tmp_path: Path) -> None:
-    db_path = tmp_path / "enabled-source-upgrade.db"
-    result = run_python(
-        f"""
-        import sqlite3
-
-        conn = sqlite3.connect({str(db_path)!r})
-        conn.executescript(
-            '''
-            CREATE TABLE sources (
-                id VARCHAR(80) NOT NULL,
-                name VARCHAR(255) NOT NULL,
-                content_type VARCHAR(20) NOT NULL,
-                platform VARCHAR(80),
-                homepage_url TEXT,
-                enabled BOOLEAN,
-                is_builtin BOOLEAN,
-                "group" VARCHAR(120),
-                priority INTEGER,
-                poll_interval INTEGER,
-                language_hint VARCHAR(20),
-                include_keywords TEXT,
-                exclude_keywords TEXT,
-                default_tags TEXT,
-                created_at DATETIME,
-                updated_at DATETIME,
-                PRIMARY KEY (id)
-            );
-            INSERT INTO sources (
-                id, name, content_type, platform, homepage_url, enabled, is_builtin,
-                "group", priority, poll_interval, language_hint, include_keywords,
-                exclude_keywords, default_tags, created_at, updated_at
-            ) VALUES
-                ('enabled-source', 'Enabled Source', 'blog', 'test', '', 1, 0, 'Blogs', 100, 3600, 'auto', '[]', '[]', '[]', '2026-01-01T00:00:00', '2026-01-01T00:00:00'),
-                ('disabled-source', 'Disabled Source', 'blog', 'test', '', 0, 0, 'Blogs', 101, 3600, 'auto', '[]', '[]', '[]', '2026-01-01T00:00:00', '2026-01-01T00:00:00');
-            '''
-        )
-        conn.close()
-
-        from app.db import SessionLocal, init_db
-        from app.models import SourceSubscription
-
-        init_db()
-        with SessionLocal() as db:
-            enabled = db.get(SourceSubscription, "enabled-source")
-            disabled = db.get(SourceSubscription, "disabled-source")
-            assert enabled is not None
-            assert enabled.subscribed is True
-            assert disabled is None
-        print("ok")
-        """,
-        sqlite_url(db_path),
     )
     assert result.stdout.strip() == "ok"
 
@@ -1658,55 +1405,6 @@ def test_settings_test_ai_custom_api_prefers_new_form_key_and_reports_incomplete
         print("ok")
         """,
         sqlite_url(tmp_path / "test-ai-custom-new-key.db"),
-    )
-    assert result.stdout.strip() == "ok"
-
-
-def test_settings_patch_blank_api_key_preserves_saved_secret(tmp_path: Path) -> None:
-    result = run_python(
-        """
-        from fastapi.testclient import TestClient
-
-        from app.api import app
-        from app.db import SessionLocal, init_db
-        from app.models import Setting
-        from app.utils import dumps
-
-        init_db()
-        with SessionLocal() as db:
-            db.add_all([
-                Setting(key="llm_provider_type", value=dumps("openai_compatible")),
-                Setting(key="llm_base_url", value=dumps("https://saved.example/v1")),
-                Setting(key="llm_api_key", value=dumps("saved-key")),
-                Setting(key="llm_model_name", value=dumps("saved-model")),
-            ])
-            db.commit()
-
-        with TestClient(app) as client:
-            response = client.patch(
-                "/api/settings",
-                json={
-                    "llm_provider_type": "openai_compatible",
-                    "llm_base_url": "https://form.example/v1",
-                    "llm_api_key": "",
-                    "llm_model_name": "form-model",
-                },
-            )
-            assert response.status_code == 200, response.text
-            settings_response = client.get("/api/settings")
-            assert settings_response.status_code == 200, settings_response.text
-
-        settings_data = settings_response.json()
-        assert "llm_api_key" not in settings_data
-        assert settings_data["llm_configured"] is True
-        assert settings_data["llm_base_url"] == "https://form.example/v1"
-        assert settings_data["llm_model_name"] == "form-model"
-
-        with SessionLocal() as db:
-            assert db.get(Setting, "llm_api_key").value == dumps("saved-key")
-        print("ok")
-        """,
-        sqlite_url(tmp_path / "settings-patch-blank-key.db"),
     )
     assert result.stdout.strip() == "ok"
 

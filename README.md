@@ -72,7 +72,7 @@ Catalog entries are opt-in:
 - Subscribed sources appear in the default feed.
 - Available but unsubscribed sources stay visible in the Source Catalog for discovery.
 
-When the same content appears in multiple sources, Daily Info stores one item keyed by `dedupe_key` and records every source in `item_sources`. Feed and API responses expose those origins through `sources[]`; the single `source_id/source_name` pair is only the primary source for display and legacy clients.
+When the same content appears in multiple sources, Daily Info stores one item keyed by `dedupe_key` and records every source in `item_sources`. Feed and API responses expose those origins through `sources[]`; the single `source_id/source_name` pair is the primary source for display.
 
 Source definition files may include fetch attempts, fulltext policy, summary policy, filters, tags, grouping, and metadata. They should not contain API keys, cookies, tokens, or other secrets. If a source eventually needs credentials, store only a secret reference in catalog metadata and keep the secret value in runtime configuration.
 
