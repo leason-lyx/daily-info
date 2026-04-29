@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Eye, Play, Plus, RefreshCcw, Search } from "lucide-react";
 import { api, Source } from "@/lib/api";
 
@@ -19,6 +19,9 @@ export default function SourcesPage() {
   const [sources, setSources] = useState<Source[]>([]);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [message, setMessage] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [hasLoadedSources, setHasLoadedSources] = useState(false);
+  const [isRefreshingSources, setIsRefreshingSources] = useState(false);
   const [pendingActions, setPendingActions] = useState<Set<string>>(() => new Set());
 
   function isPending(actionId: string) {
@@ -37,23 +40,31 @@ export default function SourcesPage() {
     });
   }
 
-  async function reload() {
+  const reload = useCallback(async ({ clearMessageOnSuccess = true, showRefreshing = true } = {}) => {
+    if (showRefreshing) setIsRefreshingSources(true);
     try {
       setSources(await api.getSources());
-      setMessage("");
+      setHasLoadedSources(true);
+      setLoadError("");
+      if (clearMessageOnSuccess) setMessage("");
     } catch (err) {
-      setMessage(`Could not load source catalog: ${errorMessage(err)}`);
+      setLoadError(`Could not load source catalog: ${errorMessage(err)}`);
+    } finally {
+      if (showRefreshing) setIsRefreshingSources(false);
     }
-  }
+  }, []);
 
   useEffect(() => {
     let alive = true;
     api.getSources()
       .then((rows) => {
-        if (alive) setSources(rows);
+        if (!alive) return;
+        setSources(rows);
+        setHasLoadedSources(true);
+        setLoadError("");
       })
       .catch((err) => {
-        if (alive) setMessage(`Could not load source catalog: ${errorMessage(err)}`);
+        if (alive) setLoadError(`Could not load source catalog: ${errorMessage(err)}`);
       });
     return () => {
       alive = false;
@@ -114,7 +125,7 @@ export default function SourcesPage() {
         await api.subscribeSource(source.id);
         setMessage(`Subscribed ${source.title || source.name}. It is now eligible for fetch and feed display.`);
       }
-      await reload();
+      await reload({ clearMessageOnSuccess: false });
     } catch (err) {
       setMessage(`Could not update ${source.title || source.name}: ${errorMessage(err)}`);
     } finally {
@@ -145,7 +156,7 @@ export default function SourcesPage() {
     try {
       const result = await api.fetchSource(source.id);
       setMessage(`Queued ${source.title || source.name} fetch job ${result.job_id}.`);
-      await reload();
+      await reload({ clearMessageOnSuccess: false });
     } catch (err) {
       setMessage(`Could not fetch ${source.title || source.name}: ${errorMessage(err)}`);
     } finally {
@@ -154,23 +165,28 @@ export default function SourcesPage() {
   }
 
   const subscribedCount = sources.filter((source) => source.subscribed).length;
+  const isInitialLoading = !hasLoadedSources && !loadError;
+  const sourceSummaryText = hasLoadedSources
+    ? `${subscribedCount}/${sources.length} subscribed sources feed the default timeline`
+    : loadError ? "Sources unavailable" : "Loading sources...";
 
   return (
     <div>
       <header className="pageHead">
         <div>
           <h1>Source Catalog</h1>
-          <span className="subtle">{subscribedCount}/{sources.length} subscribed sources feed the default timeline</span>
+          <span className="subtle">{sourceSummaryText}</span>
         </div>
         <div className="actions">
           <Link className="button primary" href="/sources/new">
             <Plus size={16} /> New
           </Link>
-          <button className="button" onClick={reload}>
-            <RefreshCcw size={16} /> Refresh
+          <button className="button" onClick={() => void reload()} disabled={isRefreshingSources}>
+            <RefreshCcw size={16} /> {isRefreshingSources ? "Refreshing..." : "Refresh"}
           </button>
         </div>
       </header>
+      {loadError && <div className="empty">{loadError}</div>}
 
       <section className="toolbar">
         <div className="toolbarPrimary">
@@ -186,7 +202,7 @@ export default function SourcesPage() {
       </section>
 
       <section className="stack">
-        {visibleSourceGroups.map((group) => (
+        {isInitialLoading ? <SourcesSkeleton /> : visibleSourceGroups.map((group) => (
           <section className="sourceGroup" key={group.name} aria-labelledby={`source-group-${slugify(group.name)}`}>
             <div className="sourceGroupHead">
               <div>
@@ -234,7 +250,7 @@ export default function SourcesPage() {
             </div>
           </section>
         ))}
-        {!visibleSources.length && (
+        {!isInitialLoading && hasLoadedSources && !visibleSources.length && !loadError && (
           <div className="empty">
             <Search size={22} /> No sources match current filters.
           </div>
@@ -242,6 +258,48 @@ export default function SourcesPage() {
       </section>
       {message && <pre className="pre">{message}</pre>}
     </div>
+  );
+}
+
+function SourcesSkeleton() {
+  return (
+    <>
+      {[3, 2].map((rowCount, groupIndex) => (
+        <section className="sourceGroup skeletonSourceGroup" aria-hidden="true" key={groupIndex}>
+          <div className="sourceGroupHead">
+            <div className="skeletonSourceGroupTitle">
+              <span className="skeletonLine skeletonSourceGroupName" />
+              <span className="skeletonLine skeletonSourceGroupMeta" />
+            </div>
+          </div>
+          <div className="sourceGroupRows">
+            {Array.from({ length: rowCount }).map((_, rowIndex) => (
+              <article className="sourceRow skeletonSourceRow" key={rowIndex}>
+                <div className="sourceHeader">
+                  <div className="sourceTitleBlock">
+                    <span className="skeletonLine skeletonSourceTitle" />
+                    <div className="sourceDetails">
+                      <span className="skeletonLine skeletonPill" />
+                      <span className="skeletonLine skeletonPill" />
+                      <span className="skeletonLine skeletonDate" />
+                    </div>
+                  </div>
+                  <div className="sourceRunStatus skeletonSourceRun">
+                    <span className="skeletonLine skeletonSourceRunTop" />
+                    <span className="skeletonLine skeletonSourceRunBottom" />
+                  </div>
+                </div>
+                <div className="sourceActions">
+                  <span className="skeletonLine skeletonSourceSwitch" />
+                  <span className="skeletonLine skeletonSourceButton" />
+                  <span className="skeletonLine skeletonSourceButton" />
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      ))}
+    </>
   );
 }
 

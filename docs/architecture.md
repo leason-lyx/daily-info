@@ -48,7 +48,7 @@ Source Catalog
 - API 负责 HTTP 接口、settings、source 管理、feed 查询、health 查询和手动触发任务。
 - Worker 负责慢任务，不把长耗时工作塞进请求响应路径。
 - Scheduler 只负责投递到期任务，真正执行仍交给 worker。
-- SQLite 是默认持久层，启用 WAL 和基本 schema migration；Postgres 目前是可选增强路径。
+- SQLite 是默认持久层，启用 WAL；Postgres 目前是可选增强路径。
 
 ## 前端页面
 

@@ -572,6 +572,192 @@ textarea {
   padding: 16px;
 }
 
+.skeletonItem {
+  pointer-events: none;
+}
+
+.skeletonTop,
+.skeletonMeta,
+.skeletonBody {
+  display: flex;
+  gap: 8px;
+}
+
+.skeletonTop,
+.skeletonMeta {
+  align-items: center;
+}
+
+.skeletonTop {
+  justify-content: space-between;
+}
+
+.skeletonBody {
+  flex-direction: column;
+  padding: 2px 0;
+}
+
+.skeletonLine {
+  display: block;
+  width: 100%;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #edf3f7 0%, #f8fafc 45%, #e6eef4 90%);
+  background-size: 220% 100%;
+  animation: shimmer 1.25s ease-in-out infinite;
+}
+
+.skeletonTitle {
+  max-width: min(58%, 520px);
+  height: 20px;
+}
+
+.skeletonStatus {
+  width: 104px;
+  height: 24px;
+}
+
+.skeletonSource {
+  width: 180px;
+  height: 18px;
+}
+
+.skeletonPill {
+  width: 72px;
+  height: 22px;
+}
+
+.skeletonDate {
+  width: 120px;
+  height: 16px;
+}
+
+.skeletonWide {
+  width: 86%;
+}
+
+.skeletonShort {
+  width: 62%;
+}
+
+.skeletonTag {
+  width: 74px;
+  height: 24px;
+}
+
+.skeletonAction {
+  width: 112px;
+  height: 32px;
+  margin-left: auto;
+}
+
+.skeletonSourceGroup {
+  pointer-events: none;
+}
+
+.skeletonSourceGroupTitle {
+  display: grid;
+  gap: 6px;
+  width: min(260px, 64vw);
+}
+
+.skeletonSourceGroupName {
+  width: 180px;
+  height: 20px;
+}
+
+.skeletonSourceGroupMeta {
+  width: 96px;
+  height: 12px;
+}
+
+.skeletonSourceRow {
+  pointer-events: none;
+}
+
+.skeletonSourceTitle {
+  width: min(360px, 72%);
+  height: 20px;
+}
+
+.skeletonSourceRun {
+  min-height: 70px;
+}
+
+.skeletonSourceRunTop {
+  width: 84%;
+  height: 12px;
+}
+
+.skeletonSourceRunBottom {
+  width: 68%;
+  height: 16px;
+}
+
+.skeletonSourceSwitch {
+  width: 136px;
+  height: 38px;
+}
+
+.skeletonSourceButton {
+  width: 104px;
+  height: 34px;
+}
+
+.skeletonHealthOverview,
+.skeletonHealthSection {
+  pointer-events: none;
+}
+
+.skeletonHealthEyebrow {
+  width: 72px;
+  height: 12px;
+}
+
+.skeletonHealthValue {
+  width: 128px;
+  height: 28px;
+}
+
+.skeletonHealthMeta {
+  width: 120px;
+  height: 14px;
+}
+
+.skeletonHealthMeta.short {
+  width: 84px;
+}
+
+.skeletonHealthSectionTitle {
+  width: 140px;
+  height: 20px;
+}
+
+.skeletonHealthSectionMeta {
+  width: 96px;
+  height: 14px;
+}
+
+.skeletonHealthRow {
+  pointer-events: none;
+}
+
+.skeletonHealthRowTitle {
+  width: min(340px, 62vw);
+  height: 16px;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: 180% 0;
+  }
+
+  100% {
+    background-position: -40% 0;
+  }
+}
+
 .itemTop,
 .row {
   display: flex;

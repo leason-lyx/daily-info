@@ -116,17 +116,15 @@ function sourceTitle(item: Item) {
   return rows.map((source) => source.source_name || source.source_id).join("\n");
 }
 
-function selectedIdsFromParams(sourceRows: Source[], sourceParams: string[], legacyContentType: string | null) {
+function selectedIdsFromParams(sourceRows: Source[], sourceParams: string[]) {
   if (sourceParams.includes(NO_SOURCE_SENTINEL)) return new Set<string>();
   if (sourceParams.length) return new Set(sourceParams);
-  if (legacyContentType) return new Set(sourceRows.filter((source) => source.content_type === legacyContentType).map((source) => source.id));
   return new Set(sourceRows.map((source) => source.id));
 }
 
-function sourceIdsForItemsQuery(sourceRows: Source[], sourceParams: string[], legacyContentType: string | null) {
+function sourceIdsForItemsQuery(sourceRows: Source[], sourceParams: string[]) {
   if (sourceParams.includes(NO_SOURCE_SENTINEL)) return [];
   if (sourceParams.length) return sourceRows.map((source) => source.id).filter((id) => sourceParams.includes(id));
-  if (legacyContentType) return sourceRows.filter((source) => source.content_type === legacyContentType).map((source) => source.id);
   return sourceRows.map((source) => source.id);
 }
 
@@ -142,10 +140,8 @@ function sourceGroupRank(groupName: string) {
 function itemQueryFromFilters(searchParams: URLSearchParams, sourceRows: Source[]) {
   const next = new URLSearchParams(searchParams.toString());
   const sourceParams = next.getAll("source_id");
-  const legacyContentType = next.get("content_type");
-  next.delete("content_type");
   next.delete("source_id");
-  const selectedSourceIds = sourceIdsForItemsQuery(sourceRows, sourceParams, legacyContentType);
+  const selectedSourceIds = sourceIdsForItemsQuery(sourceRows, sourceParams);
   if (!selectedSourceIds.length) {
     next.append("source_id", NO_SOURCE_SENTINEL);
   } else if (selectedSourceIds.length < sourceRows.length) {
@@ -162,15 +158,19 @@ function FeedView() {
   const [total, setTotal] = useState(0);
   const [sources, setSources] = useState<Source[]>([]);
   const [error, setError] = useState("");
+  const [loadedQueryKey, setLoadedQueryKey] = useState<string | null>(null);
+  const [failedQueryKey, setFailedQueryKey] = useState<string | null>(null);
   const [summarizingIds, setSummarizingIds] = useState<Set<string>>(new Set());
   const [isPending, startTransition] = useTransition();
-  const query = useMemo(() => new URLSearchParams(searchParams.toString()), [searchParams]);
+  const queryKey = searchParams.toString();
+  const query = useMemo(() => new URLSearchParams(queryKey), [queryKey]);
+  const isLoading = loadedQueryKey !== queryKey && failedQueryKey !== queryKey;
+  const activeError = failedQueryKey === queryKey ? error : "";
   const searchQuery = searchParams.get("q") || "";
   const sourceParams = searchParams.getAll("source_id");
-  const legacyContentType = searchParams.get("content_type");
   const selectedSourceIds = useMemo(() => {
-    return selectedIdsFromParams(sources, sourceParams, legacyContentType);
-  }, [legacyContentType, sourceParams, sources]);
+    return selectedIdsFromParams(sources, sourceParams);
+  }, [sourceParams, sources]);
   const sourceGroups = useMemo(() => {
     const groups = new Map<string, { groupName: string; sources: Source[] }>();
     for (const source of sources) {
@@ -191,28 +191,35 @@ function FeedView() {
 
   useEffect(() => {
     let alive = true;
-    api.getSources()
-      .then((sourceRows) => {
+
+    async function loadFeed() {
+      try {
+        const sourceRows = await api.getSources();
         if (!alive) return;
         const subscribedRows = sourceRows.filter((source) => source.subscribed);
         setSources(subscribedRows);
-        return api.getItems(itemQueryFromFilters(query, subscribedRows));
-      })
-      .then((feed) => {
-        if (!alive || !feed) return;
+        const feed = await api.getItems(itemQueryFromFilters(query, subscribedRows));
+        if (!alive) return;
         setItems(feed.items);
         setTotal(feed.total);
         setError("");
-      })
-      .catch((err: Error) => alive && setError(err.message));
+        setFailedQueryKey(null);
+        setLoadedQueryKey(queryKey);
+      } catch (err) {
+        if (!alive) return;
+        setError(err instanceof Error ? err.message : "Failed to load feed.");
+        setFailedQueryKey(queryKey);
+      }
+    }
+
+    void loadFeed();
     return () => {
       alive = false;
     };
-  }, [query]);
+  }, [query, queryKey]);
 
   function setParam(key: string, value: string) {
     const next = new URLSearchParams(searchParams.toString());
-    if (key !== "content_type") next.delete("content_type");
     if (value) next.set(key, value);
     else next.delete(key);
     replaceQuery(next);
@@ -220,7 +227,6 @@ function FeedView() {
 
   function setSourceFilter(nextSourceIds: string[]) {
     const next = new URLSearchParams(searchParams.toString());
-    next.delete("content_type");
     next.delete("source_id");
     if (!nextSourceIds.length) {
       next.append("source_id", NO_SOURCE_SENTINEL);
@@ -284,7 +290,7 @@ function FeedView() {
       <header className="pageHead">
         <div>
           <h1>Unified Feed</h1>
-          <span className="subtle">{total} items match current filters</span>
+          <span className="subtle">{isLoading && !items.length ? "Loading items..." : `${total} items match current filters`}</span>
         </div>
       </header>
 
@@ -395,10 +401,10 @@ function FeedView() {
         </div>
       </section>
 
-      {error && <div className="empty">{error}</div>}
-      {isPending && <div className="subtle">Refreshing filters...</div>}
+      {activeError && <div className="empty">{activeError}</div>}
+      {(isPending || (isLoading && items.length > 0)) && <div className="subtle">Refreshing...</div>}
       <section className="stack">
-        {items.map((item) => {
+        {isLoading && !items.length ? <FeedSkeleton /> : items.map((item) => {
           const authors = visibleAuthors(item.authors);
           const aiRows = aiSummaryRows(item);
           const hasAiSummary = Boolean(item.ai_summary?.one_sentence);
@@ -511,13 +517,44 @@ function FeedView() {
             </article>
           );
         })}
-        {!items.length && !error && (
+        {!isLoading && !items.length && !activeError && (
           <div className="empty">
             <Search size={22} /> No items yet. Subscribe to a source and run fetch.
           </div>
         )}
       </section>
     </div>
+  );
+}
+
+function FeedSkeleton() {
+  return (
+    <>
+      {Array.from({ length: 4 }, (_, index) => (
+        <article className="item skeletonItem" aria-hidden="true" key={index}>
+          <div className="skeletonTop">
+            <span className="skeletonLine skeletonTitle" />
+            <span className="skeletonLine skeletonStatus" />
+          </div>
+          <div className="skeletonMeta">
+            <span className="skeletonLine skeletonSource" />
+            <span className="skeletonLine skeletonPill" />
+            <span className="skeletonLine skeletonPill" />
+            <span className="skeletonLine skeletonDate" />
+          </div>
+          <div className="skeletonBody">
+            <span className="skeletonLine" />
+            <span className="skeletonLine skeletonWide" />
+            <span className="skeletonLine skeletonShort" />
+          </div>
+          <div className="skeletonMeta">
+            <span className="skeletonLine skeletonTag" />
+            <span className="skeletonLine skeletonTag" />
+            <span className="skeletonLine skeletonAction" />
+          </div>
+        </article>
+      ))}
+    </>
   );
 }
 

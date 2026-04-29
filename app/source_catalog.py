@@ -91,7 +91,6 @@ def apply_definition(source: Source, definition: SourceDefinitionIn, catalog_fil
     source.spec_json = spec_json
     source.spec_hash = hashlib.sha256(spec_json.encode("utf-8")).hexdigest()
     source.catalog_file = catalog_file
-    # Legacy column kept for compatibility only; subscription is the new truth.
     source.enabled = False
 
 

@@ -22,7 +22,6 @@ from app.schemas import (
     SettingsPatch,
     SourceDefinitionIn,
     SourceDefinitionOut,
-    SourceIn,
     SourceOut,
     SourcePatch,
     SourceSubscriptionOut,
@@ -30,12 +29,11 @@ from app.schemas import (
 from app.services import (
     content_audit_for_source,
     create_source_definition,
-    create_source_model,
     export_source_pack,
     import_source_pack,
     item_to_out,
     item_sources_for_item,
-    ensure_legacy_llm_provider,
+    ensure_initial_llm_provider,
     list_source_definitions,
     list_llm_providers,
     load_runtime_settings,
@@ -74,7 +72,7 @@ def startup() -> None:
     with next(get_db()) as db:
         sync_default_source_pack(db)
         runtime_settings = load_runtime_settings(db)
-        ensure_legacy_llm_provider(db, runtime_settings)
+        ensure_initial_llm_provider(db, runtime_settings)
         reconcile_auto_summary_statuses(db, load_runtime_settings(db))
 
 
@@ -84,7 +82,6 @@ Db = Annotated[Session, Depends(get_db)]
 @app.get("/api/items", response_model=ItemListOut)
 def get_items(
     db: Db,
-    content_type: str | None = None,
     source_id: list[str] | None = Query(default=None),
     source_group: str | None = None,
     platform: str | None = None,
@@ -98,7 +95,7 @@ def get_items(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> ItemListOut:
-    items, total = query_items(db, content_type, source_id, source_group, platform, include_unsubscribed, q, since, summary_status, read, starred, hidden, limit, offset)
+    items, total = query_items(db, source_id, source_group, platform, include_unsubscribed, q, since, summary_status, read, starred, hidden, limit, offset)
     return ItemListOut(items=[item_to_out(item, db) for item in items], total=total)
 
 
@@ -198,18 +195,6 @@ def unsubscribe(source_id: str, db: Db):
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Source definition not found") from exc
     return SourceSubscriptionOut(**subscription_to_dict(subscription))
-
-
-@app.post("/api/legacy/sources", response_model=SourceOut)
-def create_legacy_source(payload: SourceIn, db: Db):
-    if db.get(Source, payload.id):
-        raise HTTPException(status_code=409, detail="Source id already exists")
-    source = create_source_model(payload)
-    db.add(source)
-    db.commit()
-    db.refresh(source)
-    queue_auto_summaries(db, load_runtime_settings(db), source_id=source.id, limit=20)
-    return source_to_out(source)
 
 
 @app.patch("/api/sources/{source_id}", response_model=SourceOut)
@@ -505,7 +490,6 @@ def health(db: Db):
 
 @app.get("/api/settings", response_model=SettingsOut)
 def get_app_settings(db: Db):
-    ensure_legacy_llm_provider(db, load_runtime_settings(db))
     settings = load_runtime_settings(db)
     return SettingsOut(
         database_url=_redact_database_url(settings.database_url),
@@ -526,17 +510,13 @@ def get_app_settings(db: Db):
 def patch_app_settings(payload: SettingsPatch, db: Db):
     payload_data = payload.model_dump(exclude_unset=True)
     providers_payload = payload_data.pop("llm_providers", None)
-    for key, value in payload.model_dump(exclude_unset=True).items():
-        if key == "llm_providers":
-            continue
+    for key, value in payload_data.items():
         if key == "llm_api_key" and (value is None or not value.strip()):
             continue
         set_setting_value(db, key, value)
     if providers_payload is not None:
         _sync_llm_providers(db, payload.llm_providers or [])
         set_setting_value(db, "llm_providers_initialized", True)
-    else:
-        _sync_legacy_llm_provider_patch(db, payload_data)
     db.commit()
     return {"saved": True, "note": "AI runtime settings are stored in DB. RSSHub is configured by environment or config files."}
 
@@ -566,28 +546,6 @@ def _sync_llm_providers(db: Session, providers: list[LLMProviderIn]) -> None:
     for provider_id, provider in existing.items():
         if provider_id not in seen_ids:
             db.delete(provider)
-
-
-def _sync_legacy_llm_provider_patch(db: Session, payload_data: dict) -> None:
-    if payload_data.get("llm_provider_type") not in {None, "openai_compatible"}:
-        return
-    legacy_keys = {"llm_base_url", "llm_api_key", "llm_model_name", "llm_temperature", "llm_timeout"}
-    if not legacy_keys.intersection(payload_data):
-        return
-    provider = next(iter(list_llm_providers(db)), None)
-    if not provider:
-        return
-    if "llm_base_url" in payload_data:
-        provider.base_url = (payload_data.get("llm_base_url") or "").strip()
-    if "llm_model_name" in payload_data:
-        provider.model_name = (payload_data.get("llm_model_name") or "").strip()
-    if payload_data.get("llm_api_key"):
-        provider.api_key = str(payload_data["llm_api_key"])
-    if "llm_temperature" in payload_data and payload_data["llm_temperature"] is not None:
-        provider.temperature = str(payload_data["llm_temperature"])
-    if "llm_timeout" in payload_data and payload_data["llm_timeout"] is not None:
-        provider.timeout = int(payload_data["llm_timeout"])
-    provider.enabled = bool(provider.base_url and provider.api_key and provider.model_name)
 
 
 def _settings_for_ai_test(db: Session, payload: SettingsPatch):

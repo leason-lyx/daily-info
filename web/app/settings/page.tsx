@@ -368,21 +368,6 @@ function providerPayload(provider: ProviderForm, index: number) {
 
 function providerForms(settings: Settings): ProviderForm[] {
   const rows = [...(settings.llm_providers || [])].sort((a, b) => a.priority - b.priority || a.id - b.id);
-  if (!rows.length && settings.llm_base_url) {
-    rows.push({
-      id: 0,
-      name: "Default API",
-      provider_type: "openai_compatible",
-      base_url: settings.llm_base_url,
-      model_name: settings.llm_model_name || "",
-      temperature: 0.2,
-      timeout: 60,
-      enabled: Boolean(settings.llm_configured),
-      priority: 0,
-      has_api_key: Boolean(settings.llm_configured),
-      last_error: "",
-    });
-  }
   return rows.map((provider, index) => ({
     clientId: provider.id ? `provider-${provider.id}` : newProviderId(),
     id: provider.id || undefined,

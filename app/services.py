@@ -6,10 +6,9 @@ import yaml
 from sqlalchemy import Select, and_, delete, distinct, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.catalog import ARXIV_CS_AI_API_URL, ARXIV_CS_CL_API_URL, ARXIV_CS_SE_API_URL, DEFAULT_SOURCE_PACK_PATH
-from app.config import Settings
+from app.catalog import DEFAULT_SOURCE_PACK_PATH
+from app.config import Settings, get_settings
 from app.fulltext import extract_generic_article, strip_html
-from app.config import get_settings
 from app.models import Fulltext, Item, ItemSource, Job, JobStatus, LLMProvider, RawEntry, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
 from app.schemas import ItemOut, SourceAttemptIn, SourceAttemptOut, SourceDefinitionIn, SourceDefinitionOut, SourceOut, SourcePatch, SourceRuntimeOut, SourceIn
 from app.source_catalog import definition_from_source, sync_source_catalog, upsert_source_definition
@@ -245,7 +244,7 @@ def _provider_temperature(provider: LLMProvider) -> float:
         return 0.2
 
 
-def ensure_legacy_llm_provider(db: Session, settings: Settings | None = None) -> bool:
+def ensure_initial_llm_provider(db: Session, settings: Settings | None = None) -> bool:
     settings = settings or get_settings()
     if list_llm_providers(db) or _settings_flag(db, "llm_providers_initialized"):
         return False
@@ -287,8 +286,6 @@ def openai_summary_provider_chain(db: Session, settings: Settings) -> list[tuple
     providers = [provider for provider in list_llm_providers(db) if provider.enabled and _provider_configured(provider)]
     if providers:
         return [(provider, llm_provider_to_settings(settings, provider)) for provider in providers]
-    if not _settings_flag(db, "llm_providers_initialized") and settings.llm_provider_type == "openai_compatible" and settings.llm_configured:
-        return [(None, settings)]
     return []
 
 
@@ -458,112 +455,7 @@ def _merged_item_source_tags(db: Session, item_id: str) -> list[str]:
 def sync_known_builtin_source(db: Session, source: Source, builtin: SourceIn) -> None:
     if not source.is_builtin:
         return
-    if source.id == "openai-news" and _has_legacy_openai_news_attempt(source):
-        source.attempts.clear()
-        db.flush()
-        source.attempts = [attempt_model(attempt) for attempt in builtin.attempts]
-        source.fulltext = dumps(builtin.fulltext)
-        source.homepage_url = builtin.homepage_url
-        source.stability_level = builtin.stability_level
-    if source.id == "anthropic-news" and _has_legacy_anthropic_news_attempt(source):
-        source.attempts.clear()
-        db.flush()
-        source.attempts = [attempt_model(attempt) for attempt in builtin.attempts]
-        source.homepage_url = builtin.homepage_url
-        source.stability_level = builtin.stability_level
-    if source.id == "arxiv-cs-se" and _has_legacy_arxiv_cs_se_attempt(source):
-        source.attempts.clear()
-        db.flush()
-        source.attempts = [attempt_model(attempt) for attempt in builtin.attempts]
-        source.fulltext = dumps(builtin.fulltext)
-        source.homepage_url = builtin.homepage_url
-        source.stability_level = builtin.stability_level
-    if source.id == "arxiv-cs-ai" and _has_legacy_arxiv_cs_ai_attempt(source):
-        source.attempts.clear()
-        db.flush()
-        source.attempts = [attempt_model(attempt) for attempt in builtin.attempts]
-        source.fulltext = dumps(builtin.fulltext)
-        source.homepage_url = builtin.homepage_url
-        source.stability_level = builtin.stability_level
-    if source.id == "arxiv-cs-cl" and _has_legacy_arxiv_cs_cl_attempt(source):
-        source.attempts.clear()
-        db.flush()
-        source.attempts = [attempt_model(attempt) for attempt in builtin.attempts]
-        source.fulltext = dumps(builtin.fulltext)
-        source.homepage_url = builtin.homepage_url
-        source.stability_level = builtin.stability_level
-    current_fulltext = loads(source.fulltext, {})
-    if _should_sync_builtin_fulltext(source.id, current_fulltext):
-        source.fulltext = dumps(builtin.fulltext)
-    if source.id in {"anthropic-news", "anthropic-research", "anthropic-engineering"}:
-        _sync_builtin_attempt_config(source, builtin)
-
-
-def _has_legacy_anthropic_news_attempt(source: Source) -> bool:
-    return any(attempt.adapter == "feed" and attempt.url == "https://www.anthropic.com/news/rss.xml" for attempt in source.attempts)
-
-
-def _has_legacy_openai_news_attempt(source: Source) -> bool:
-    return any(attempt.adapter == "feed" and attempt.url == "https://openai.com/news/rss.xml" for attempt in source.attempts)
-
-
-def _has_legacy_arxiv_cs_se_attempt(source: Source) -> bool:
-    return any(
-        attempt.adapter == "feed"
-        and attempt.url == "https://rss.arxiv.org/rss/cs.SE"
-        and attempt.url != ARXIV_CS_SE_API_URL
-        for attempt in source.attempts
-    )
-
-
-def _has_legacy_arxiv_cs_ai_attempt(source: Source) -> bool:
-    return any(
-        attempt.adapter == "feed"
-        and attempt.url == "https://rss.arxiv.org/rss/cs.AI"
-        and attempt.url != ARXIV_CS_AI_API_URL
-        for attempt in source.attempts
-    )
-
-
-def _has_legacy_arxiv_cs_cl_attempt(source: Source) -> bool:
-    return any(
-        attempt.adapter == "feed"
-        and attempt.url == "https://rss.arxiv.org/rss/cs.CL"
-        and attempt.url != ARXIV_CS_CL_API_URL
-        for attempt in source.attempts
-    )
-
-
-def _should_sync_builtin_fulltext(source_id: str, current: dict[str, Any]) -> bool:
-    feed_or_detail_sources = {
-        "openai-research",
-        "anthropic-news",
-        "anthropic-research",
-        "anthropic-engineering",
-        "google-ai-blog",
-        "google-deepmind-blog",
-        "huggingface-blog",
-        "nvidia-blog",
-        "mit-technology-review-ai",
-        "the-verge-tech",
-        "techcrunch-ai",
-        "ars-technica-ai",
-        "wired-ai",
-        "404-media",
-    }
-    if source_id in feed_or_detail_sources:
-        return current.get("strategy") in {None, "feed_field"}
-    if source_id == "openai-news":
-        return current.get("strategy") == "generic_article" and "max_fulltext_per_run" not in current
-    return False
-
-
-def _sync_builtin_attempt_config(source: Source, builtin: SourceIn) -> None:
-    configs = {(attempt.adapter, attempt.route or attempt.url): attempt.config for attempt in builtin.attempts}
-    for attempt in source.attempts:
-        key = (attempt.adapter, attempt.route or attempt.url)
-        if key in configs and loads(attempt.config, {}) in ({}, {"timeout": 45}):
-            attempt.config = dumps(configs[key])
+    return
 
 
 def create_source_model(data: SourceIn, is_builtin: bool = False) -> Source:
@@ -989,7 +881,6 @@ def reconcile_auto_summary_statuses(db: Session, settings: Settings, limit: int 
 
 def query_items(
     db: Session,
-    content_type: str | None = None,
     source_id: list[str] | None = None,
     source_group: str | None = None,
     platform: str | None = None,
@@ -1010,8 +901,6 @@ def query_items(
         if not subscribed_ids:
             return [], 0
         filters.append(_item_has_source(subscribed_ids))
-    if content_type:
-        filters.append(Item.content_type == content_type)
     if source_id:
         filters.append(_item_has_source(source_id))
     if platform:

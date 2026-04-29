@@ -63,7 +63,7 @@ RSSHub 是可选增强。系统会按配置的实例顺序尝试 RSSHub route，
 - `LLM_API_KEY`
 - `LLM_MODEL_NAME`
 
-启动后也可以在 `/settings` 中维护多个自定义 API 配置档。每个配置档包含名称、Base URL、模型、API key、temperature、timeout、启用状态和顺序。摘要任务会按启用配置档的顺序调用；当前一个配置失败时，会在同一次摘要任务内立即尝试下一个启用配置。环境变量和旧版 UI settings 会在没有配置档时作为兼容来源生成默认配置档。
+启动后也可以在 `/settings` 中维护多个自定义 API 配置档。每个配置档包含名称、Base URL、模型、API key、temperature、timeout、启用状态和顺序。摘要任务会按启用配置档的顺序调用；当前一个配置失败时，会在同一次摘要任务内立即尝试下一个启用配置。环境变量可作为首次启动时的初始配置来源。
 
 启用 Codex CLI provider 时，需要确保运行环境可以访问 Codex CLI，并配置：
 

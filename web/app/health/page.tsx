@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronDown, ChevronUp, RefreshCcw } from "lucide-react";
 import { api, Health, HealthJob, LlmUsage } from "@/lib/api";
@@ -23,14 +23,43 @@ const defaultExpandedSections: Record<ExpandableHealthSection, boolean> = {
 
 export default function HealthPage() {
   const [health, setHealth] = useState<Health>({});
-  const [error, setError] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [hasLoadedHealth, setHasLoadedHealth] = useState(false);
+  const [isRefreshingHealth, setIsRefreshingHealth] = useState(false);
   const [expandedSections, setExpandedSections] = useState(defaultExpandedSections);
 
-  function reload() {
-    api.health().then((data) => setHealth(data as Health)).catch((err: Error) => setError(err.message));
-  }
+  const reload = useCallback(async ({ showRefreshing = true } = {}) => {
+    if (showRefreshing) setIsRefreshingHealth(true);
+    try {
+      const data = await api.health();
+      setHealth(data as Health);
+      setHasLoadedHealth(true);
+      setLoadError("");
+    } catch (err) {
+      setLoadError(`Could not load health status: ${errorMessage(err)}`);
+    } finally {
+      if (showRefreshing) setIsRefreshingHealth(false);
+    }
+  }, []);
 
-  useEffect(reload, []);
+  useEffect(() => {
+    let alive = true;
+    api.health()
+      .then((data) => {
+        if (!alive) return;
+        setHealth(data as Health);
+        setHasLoadedHealth(true);
+        setLoadError("");
+      })
+      .catch((err) => {
+        if (alive) setLoadError(`Could not load health status: ${errorMessage(err)}`);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const isInitialLoading = !hasLoadedHealth && !loadError;
   const providerAvailable = Boolean(health.ai_provider?.available);
   const llmUsage = health.ai_provider?.usage as LlmUsage | undefined;
   const jobCounts = health.jobs?.counts;
@@ -51,12 +80,17 @@ export default function HealthPage() {
       <header className="pageHead">
         <div>
           <h1>Health</h1>
+          {(isInitialLoading || isRefreshingHealth) && (
+            <span className="subtle">{isInitialLoading ? "Loading health..." : "Refreshing..."}</span>
+          )}
         </div>
-        <button className="iconButton" onClick={reload} title="Refresh health" aria-label="Refresh health">
+        <button className="iconButton" onClick={() => void reload()} title="Refresh health" aria-label="Refresh health" disabled={isRefreshingHealth}>
           <RefreshCcw size={16} />
         </button>
       </header>
-      {error && <div className="healthEmpty">{error}</div>}
+      {loadError && <div className="healthEmpty">{loadError}</div>}
+      {isInitialLoading ? <HealthSkeleton /> : hasLoadedHealth ? (
+        <>
       <section className="healthOverview" aria-label="Health overview">
         <div className="healthMetric">
           <span className="healthEyebrow">Items</span>
@@ -156,38 +190,42 @@ export default function HealthPage() {
         onToggle={() => toggleSection("sourceHealth")}
         actionLabel={expandedSections.sourceHealth ? "Show less" : `Show all ${sources.length}`}
       >
-        <div className="healthList">
-          {visibleSources.map((source) => {
-            const latest = source.latest_run;
-            const contentAudit = source.content_audit;
-            return (
-              <article className="healthListRow" key={String(source.id)}>
-                <div className="healthRowMain">
-                  <h3 className="healthRowTitle">{String(source.name)}</h3>
-                  <div className="healthMeta">
-                    <span>{String(source.id)}</span>
-                    <span>{source.enabled ? "enabled" : "disabled"}</span>
-                    <span>{source.auto_summary_enabled ? `auto summary ${source.auto_summary_days || 7}d` : "auto summary off"}</span>
-                    <span>latest success {formatDate(source.latest_success_at)}</span>
-                    <span>raw {String(source.raw_count ?? 0)}</span>
-                    <span>items {String(source.item_count ?? 0)}</span>
-                    <span>fulltext {formatRate(source.fulltext_success_rate)}</span>
-                    <span>summary ready {String(source.summary_ready_count ?? 0)}</span>
-                    <span>summary failed {String(source.summary_failed_count ?? 0)}</span>
-                    <span>summary fail {formatRate(source.summary_failure_rate)}</span>
-                    <span>failures {String(source.consecutive_failures ?? 0)}</span>
-                    <span>empty {String(source.consecutive_empty ?? 0)}</span>
-                    <span>{String(contentAudit?.status ?? "unknown")}</span>
+        {sources.length ? (
+          <div className="healthList">
+            {visibleSources.map((source) => {
+              const latest = source.latest_run;
+              const contentAudit = source.content_audit;
+              return (
+                <article className="healthListRow" key={String(source.id)}>
+                  <div className="healthRowMain">
+                    <h3 className="healthRowTitle">{String(source.name)}</h3>
+                    <div className="healthMeta">
+                      <span>{String(source.id)}</span>
+                      <span>{source.enabled ? "enabled" : "disabled"}</span>
+                      <span>{source.auto_summary_enabled ? `auto summary ${source.auto_summary_days || 7}d` : "auto summary off"}</span>
+                      <span>latest success {formatDate(source.latest_success_at)}</span>
+                      <span>raw {String(source.raw_count ?? 0)}</span>
+                      <span>items {String(source.item_count ?? 0)}</span>
+                      <span>fulltext {formatRate(source.fulltext_success_rate)}</span>
+                      <span>summary ready {String(source.summary_ready_count ?? 0)}</span>
+                      <span>summary failed {String(source.summary_failed_count ?? 0)}</span>
+                      <span>summary fail {formatRate(source.summary_failure_rate)}</span>
+                      <span>failures {String(source.consecutive_failures ?? 0)}</span>
+                      <span>empty {String(source.consecutive_empty ?? 0)}</span>
+                      <span>{String(contentAudit?.status ?? "unknown")}</span>
+                    </div>
+                    {latest?.error_message ? <span className="subtle">{String(latest.error_message)}</span> : null}
                   </div>
-                  {latest?.error_message ? <span className="subtle">{String(latest.error_message)}</span> : null}
-                </div>
-                <span className={latest?.status === "failed" ? "badge bad" : latest?.status === "succeeded" ? "badge good" : "badge"}>
-                  {String(latest?.status || "never")}
-                </span>
-              </article>
-            );
-          })}
-        </div>
+                  <span className={latest?.status === "failed" ? "badge bad" : latest?.status === "succeeded" ? "badge good" : "badge"}>
+                    {String(latest?.status || "never")}
+                  </span>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="healthEmpty">No source health records yet.</div>
+        )}
       </HealthSection>
 
       <ErrorList
@@ -198,7 +236,54 @@ export default function HealthPage() {
         onToggle={() => toggleSection("recentSourceErrors")}
       />
       <ErrorList title="Recent summary errors" rows={health.recent_summary_errors} />
+        </>
+      ) : null}
     </div>
+  );
+}
+
+function HealthSkeleton() {
+  return (
+    <>
+      <section className="healthOverview skeletonHealthOverview" aria-label="Loading health overview" aria-hidden="true">
+        {Array.from({ length: 3 }).map((_, index) => (
+          <div className="healthMetric" key={index}>
+            <span className="skeletonLine skeletonHealthEyebrow" />
+            <span className="skeletonLine skeletonHealthValue" />
+            <div className="healthMetricMeta">
+              <span className="skeletonLine skeletonHealthMeta" />
+              <span className="skeletonLine skeletonHealthMeta short" />
+            </div>
+          </div>
+        ))}
+      </section>
+      {["Job Queue", "Recent jobs", "Source health"].map((title, index) => (
+        <section className="healthSection skeletonHealthSection" aria-hidden="true" key={title}>
+          <div className="healthSectionHead">
+            <div className="healthSectionTitle">
+              <span className="healthSectionAccent" />
+              <span className="skeletonLine skeletonHealthSectionTitle" />
+            </div>
+            <span className="skeletonLine skeletonHealthSectionMeta" />
+          </div>
+          <div className="healthList">
+            {Array.from({ length: index === 2 ? 3 : 2 }).map((_, rowIndex) => (
+              <article className="healthListRow skeletonHealthRow" key={rowIndex}>
+                <div className="healthRowMain">
+                  <span className="skeletonLine skeletonHealthRowTitle" />
+                  <div className="healthMeta">
+                    <span className="skeletonLine skeletonHealthMeta" />
+                    <span className="skeletonLine skeletonHealthMeta" />
+                    <span className="skeletonLine skeletonHealthMeta short" />
+                  </div>
+                </div>
+                <span className="skeletonLine skeletonStatus" />
+              </article>
+            ))}
+          </div>
+        </section>
+      ))}
+    </>
   );
 }
 
@@ -347,6 +432,11 @@ function jobProgressLabel(status: string) {
   if (status === "failed") return "failed";
   if (status === "skipped") return "skipped";
   return status;
+}
+
+function errorMessage(err: unknown) {
+  if (err instanceof Error) return err.message;
+  return String(err);
 }
 
 function formatRate(value: number | null | undefined) {
