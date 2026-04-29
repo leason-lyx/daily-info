@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.adapters import AdapterError, preview_source
 from app.db import get_db, init_db
 from app.jobs import schedule_auto_summaries, schedule_due_sources
-from app.models import Item, Job, JobStatus, LLMProvider, Source, SourceRun, SourceSubscription, Summary, SummaryStatus
+from app.models import Item, ItemSource, Job, JobStatus, LLMProvider, Source, SourceRun, SourceSubscription, Summary, SummaryStatus
 from app.schemas import (
     AiProviderTestResult,
     ItemListOut,
@@ -34,6 +34,7 @@ from app.services import (
     export_source_pack,
     import_source_pack,
     item_to_out,
+    item_sources_for_item,
     ensure_legacy_llm_provider,
     list_source_definitions,
     list_llm_providers,
@@ -295,8 +296,9 @@ def _job_target(db: Session, job: Job) -> dict:
         item = db.get(Item, item_id) if item_id else None
         if item:
             label = item.title or item_id
-            if item.source_name:
-                label = f"{label} ({item.source_name})"
+            source_names = [source["source_name"] for source in item_sources_for_item(db, item) if source.get("source_name")]
+            if source_names:
+                label = f"{label} ({' + '.join(source_names[:2])}{' +' + str(len(source_names) - 2) + ' more' if len(source_names) > 2 else ''})"
             return {"kind": "item", "id": item_id, "label": label}
         return {"kind": "item", "id": item_id, "label": item_id or "Unknown item"}
     return {"kind": "payload", "id": "", "label": dumps(payload)[:240]}
@@ -489,6 +491,7 @@ def health(db: Db):
             {
                 "item_id": summary.item_id,
                 "source_id": item.source_id,
+                "sources": item_sources_for_item(db, item),
                 "title": item.title,
                 "provider": summary.provider,
                 "model": summary.model,

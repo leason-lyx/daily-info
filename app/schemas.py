@@ -218,6 +218,13 @@ class PreviewResponse(BaseModel):
     used_url: str | None = None
 
 
+class ItemSourceOut(BaseModel):
+    source_id: str
+    source_name: str
+    url: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
 class ItemOut(BaseModel):
     id: str
     source_id: str
@@ -238,6 +245,7 @@ class ItemOut(BaseModel):
     starred: bool
     hidden: bool
     summary_status: str
+    sources: list[ItemSourceOut] = Field(default_factory=list)
 
 
 class ItemListOut(BaseModel):

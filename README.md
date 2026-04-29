@@ -6,7 +6,7 @@ Daily Info is a self-hosted reading desk for research papers, engineering blogs,
 
 ## Features
 
-- Unified feed for papers, blogs, and posts, with search, source filters, summary status, read/star/hidden states, and tags.
+- Unified feed for papers, blogs, and posts, with search, source filters, deterministic cross-source deduplication, summary status, read/star/hidden states, and tags.
 - Source Catalog backed by `config/sources/*.yaml`, with explicit subscriptions so only chosen sources are fetched and shown in the default feed.
 - Source preview and creation flow for RSS/Atom feeds, RSSHub routes, and HTML index fallback.
 - Background worker and scheduler for source fetching, fulltext extraction, and optional auto-summary jobs.
@@ -71,6 +71,8 @@ Catalog entries are opt-in:
 - Subscribed sources are scheduled for fetch.
 - Subscribed sources appear in the default feed.
 - Available but unsubscribed sources stay visible in the Source Catalog for discovery.
+
+When the same content appears in multiple sources, Daily Info stores one item keyed by `dedupe_key` and records every source in `item_sources`. Feed and API responses expose those origins through `sources[]`; the single `source_id/source_name` pair is only the primary source for display and legacy clients.
 
 Source definition files may include fetch attempts, fulltext policy, summary policy, filters, tags, grouping, and metadata. They should not contain API keys, cookies, tokens, or other secrets. If a source eventually needs credentials, store only a secret reference in catalog metadata and keep the secret value in runtime configuration.
 
@@ -155,6 +157,8 @@ docker compose up --build -d --force-recreate api worker scheduler web
 curl -fsS http://127.0.0.1:8000/api/health
 curl -fsS http://127.0.0.1:8000/api/source-definitions
 ```
+
+For UI or feed behavior changes, also open the Compose-served web app in a browser and verify the affected workflow.
 
 ## Security Notes
 

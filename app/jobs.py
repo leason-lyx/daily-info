@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.adapters import AdapterError, run_attempt
 from app.config import Settings, get_settings
 from app.db import SessionLocal
-from app.models import Item, Job, JobStatus, Source, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
+from app.models import Item, ItemSource, Job, JobStatus, Source, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
 from app.services import load_runtime_settings, openai_summary_provider_chain, persist_entries, queue_auto_summaries, queue_job, reconcile_auto_summary_statuses
 from app.summary import content_hash, summarize_item, summarize_openai_compatible
 from app.utils import dumps, loads
@@ -94,8 +94,8 @@ async def fetch_source_job(db: Session, source_id: str, settings: Settings) -> S
 def _queued_summary_item_ids(db: Session, source_id: str) -> set[str]:
     item_ids = set(
         db.execute(
-            select(Item.id)
-            .where(Item.source_id == source_id)
+            select(ItemSource.item_id)
+            .where(ItemSource.source_id == source_id)
         ).scalars()
     )
     if not item_ids:

@@ -222,6 +222,13 @@ export type AiProviderTestResult = {
   error?: string;
 };
 
+export type ItemSource = {
+  source_id: string;
+  source_name: string;
+  url: string;
+  tags: string[];
+};
+
 export type Item = {
   id: string;
   source_id: string;
@@ -242,6 +249,7 @@ export type Item = {
   starred: boolean;
   hidden: boolean;
   summary_status: string;
+  sources: ItemSource[];
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

@@ -3,18 +3,18 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from sqlalchemy import Select, and_, delete, func, or_, select
+from sqlalchemy import Select, and_, delete, distinct, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.catalog import ARXIV_CS_AI_API_URL, ARXIV_CS_CL_API_URL, ARXIV_CS_SE_API_URL, DEFAULT_SOURCE_PACK_PATH
 from app.config import Settings
 from app.fulltext import extract_generic_article, strip_html
 from app.config import get_settings
-from app.models import Fulltext, Item, Job, JobStatus, LLMProvider, RawEntry, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
+from app.models import Fulltext, Item, ItemSource, Job, JobStatus, LLMProvider, RawEntry, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
 from app.schemas import ItemOut, SourceAttemptIn, SourceAttemptOut, SourceDefinitionIn, SourceDefinitionOut, SourceOut, SourcePatch, SourceRuntimeOut, SourceIn
 from app.source_catalog import definition_from_source, sync_source_catalog, upsert_source_definition
 from app.subscriptions import subscribed_source_ids
-from app.utils import canonicalize_url, dumps, extract_entities, loads, stable_hash, text_matches
+from app.utils import canonicalize_url, dedupe_key_from_parts, dumps, extract_entities, loads, stable_hash, text_matches
 
 
 def load_source_pack(path: str | Path) -> list[SourceIn]:
@@ -140,6 +140,7 @@ def latest_ai_summary(db: Session | None, item_id: str) -> dict[str, Any] | None
 
 
 def item_to_out(item: Item, db: Session | None = None) -> ItemOut:
+    item_sources = item_sources_for_item(db, item) if db else []
     return ItemOut(
         id=item.id,
         source_id=item.source_id,
@@ -160,7 +161,27 @@ def item_to_out(item: Item, db: Session | None = None) -> ItemOut:
         starred=item.starred,
         hidden=item.hidden,
         summary_status=item.summary_status,
+        sources=item_sources,
     )
+
+
+def item_sources_for_item(db: Session | None, item: Item) -> list[dict[str, Any]]:
+    if db is None:
+        return []
+    rows = db.execute(
+        select(ItemSource)
+        .where(ItemSource.item_id == item.id)
+        .order_by(ItemSource.first_seen_at, ItemSource.id)
+    ).scalars().all()
+    return [
+        {
+            "source_id": row.source_id,
+            "source_name": row.source_name,
+            "url": row.url,
+            "tags": loads(row.tags, []),
+        }
+        for row in rows
+    ]
 
 
 def load_runtime_settings(db: Session) -> Settings:
@@ -383,21 +404,55 @@ def cleanup_retired_sources(db: Session, retired_ids: set[str]) -> None:
         source = db.get(Source, source_id)
         if not source or not source.is_builtin:
             continue
-        item_ids = list(db.execute(select(Item.id).where(Item.source_id == source_id)).scalars())
+        affected_item_ids = list(db.execute(select(ItemSource.item_id).where(ItemSource.source_id == source_id)).scalars())
         jobs = db.execute(select(Job)).scalars().all()
         for job in jobs:
             payload = loads(job.payload, {})
-            if payload.get("source_id") == source_id or payload.get("item_id") in item_ids:
+            if payload.get("source_id") == source_id:
                 db.delete(job)
-        if item_ids:
-            db.execute(delete(Summary).where(Summary.item_id.in_(item_ids)))
-            db.execute(delete(Fulltext).where(Fulltext.item_id.in_(item_ids)))
+        db.execute(delete(ItemSource).where(ItemSource.source_id == source_id))
+        orphan_item_ids: list[str] = []
+        for item_id in affected_item_ids:
+            item = db.get(Item, item_id)
+            if not item:
+                continue
+            replacement = db.execute(
+                select(ItemSource, Source)
+                .join(Source, Source.id == ItemSource.source_id)
+                .where(ItemSource.item_id == item_id)
+                .order_by(ItemSource.first_seen_at, ItemSource.id)
+                .limit(1)
+            ).first()
+            if replacement:
+                item_source, replacement_source = replacement
+                item.source_id = item_source.source_id
+                item.source_name = item_source.source_name or replacement_source.name
+                item.platform = replacement_source.platform
+                item.content_type = replacement_source.content_type
+                item.url = item_source.url or item.url
+                item.canonical_url = item_source.canonical_url or item.canonical_url
+                item.tags = dumps(_merged_item_source_tags(db, item_id))
+            else:
+                orphan_item_ids.append(item_id)
+        for job in jobs:
+            payload = loads(job.payload, {})
+            if payload.get("item_id") in orphan_item_ids:
+                db.delete(job)
+        if orphan_item_ids:
+            db.execute(delete(Summary).where(Summary.item_id.in_(orphan_item_ids)))
+            db.execute(delete(Fulltext).where(Fulltext.item_id.in_(orphan_item_ids)))
+            db.execute(delete(Item).where(Item.id.in_(orphan_item_ids)))
+        db.flush()
         db.execute(delete(RawEntry).where(RawEntry.source_id == source_id))
         db.execute(delete(SourceRun).where(SourceRun.source_id == source_id))
         db.execute(delete(SourceAttempt).where(SourceAttempt.source_id == source_id))
-        db.execute(delete(Item).where(Item.source_id == source_id))
         db.delete(source)
     db.flush()
+
+
+def _merged_item_source_tags(db: Session, item_id: str) -> list[str]:
+    tag_rows = db.execute(select(ItemSource.tags).where(ItemSource.item_id == item_id)).scalars()
+    return _merge_list_values(*[loads(tags, []) for tags in tag_rows])
 
 
 def sync_known_builtin_source(db: Session, source: Source, builtin: SourceIn) -> None:
@@ -586,15 +641,18 @@ def latest_runs(db: Session) -> dict[str, SourceRun]:
 
 
 def source_content_stats(db: Session) -> dict[str, dict[str, Any]]:
+    assoc = _item_source_assoc_subquery()
     item_rows = db.execute(
         select(
-            Item.source_id,
-            func.count(Item.id),
+            assoc.c.source_id,
+            func.count(distinct(Item.id)),
             func.avg(func.length(Item.summary)),
             func.avg(func.length(Item.raw_text)),
             func.min(func.length(Item.raw_text)),
             func.max(func.length(Item.raw_text)),
-        ).group_by(Item.source_id)
+        )
+        .join(Item, Item.id == assoc.c.item_id)
+        .group_by(assoc.c.source_id)
     ).all()
     stats = {
         row[0]: {
@@ -609,10 +667,11 @@ def source_content_stats(db: Session) -> dict[str, dict[str, Any]]:
         for row in item_rows
     }
     extractor_rows = db.execute(
-        select(Item.source_id, Fulltext.extractor, func.count(Fulltext.id))
-        .join(Item, Item.id == Fulltext.item_id)
+        select(assoc.c.source_id, Fulltext.extractor, func.count(distinct(Fulltext.id)))
+        .join(Item, Item.id == assoc.c.item_id)
+        .join(Fulltext, Fulltext.item_id == Item.id)
         .where(Fulltext.status == "succeeded")
-        .group_by(Item.source_id, Fulltext.extractor)
+        .group_by(assoc.c.source_id, Fulltext.extractor)
     ).all()
     for source_id, extractor, count in extractor_rows:
         bucket = stats.setdefault(
@@ -635,12 +694,21 @@ def source_content_stats(db: Session) -> dict[str, dict[str, Any]]:
 
 
 def source_summary_stats(db: Session) -> dict[str, dict[str, int]]:
-    rows = db.execute(select(Item.source_id, Item.summary_status, func.count(Item.id)).group_by(Item.source_id, Item.summary_status)).all()
+    assoc = _item_source_assoc_subquery()
+    rows = db.execute(
+        select(assoc.c.source_id, Item.summary_status, func.count(distinct(Item.id)))
+        .join(Item, Item.id == assoc.c.item_id)
+        .group_by(assoc.c.source_id, Item.summary_status)
+    ).all()
     stats: dict[str, dict[str, int]] = {}
     for source_id, status, count in rows:
         bucket = stats.setdefault(source_id, {"ready": 0, "failed": 0, "pending": 0, "not_configured": 0, "skipped": 0})
         bucket[str(status)] = int(count or 0)
     return stats
+
+
+def _item_source_assoc_subquery():
+    return select(ItemSource.source_id.label("source_id"), ItemSource.item_id.label("item_id")).subquery()
 
 
 def _summary_usage_bucket(db: Session, cutoff: datetime | None = None, model: str | None = None) -> dict[str, Any]:
@@ -837,9 +905,9 @@ def queue_auto_summaries(db: Session, settings: Settings, source_id: str | None 
         item_stmt = (
             select(Item)
             .where(
-                Item.source_id == source.id,
+                _item_has_source([source.id]),
                 Item.summary_status.in_(AUTO_SUMMARY_QUEUE_STATUSES),
-                Item.raw_text != "",
+                func.trim(Item.raw_text) != "",
                 or_(Item.published_at >= cutoff, and_(Item.published_at.is_(None), Item.created_at >= cutoff)),
                 ~ready_exists,
             )
@@ -862,7 +930,7 @@ def queue_auto_summaries(db: Session, settings: Settings, source_id: str | None 
 
 
 def _active_summary_job_item_ids(db: Session, source_id: str) -> set[str]:
-    item_ids = set(db.execute(select(Item.id).where(Item.source_id == source_id)).scalars())
+    item_ids = set(db.execute(select(Item.id).where(_item_has_source([source_id]))).scalars())
     if not item_ids:
         return set()
     active_jobs = db.execute(
@@ -890,7 +958,7 @@ def reconcile_auto_summary_statuses(db: Session, settings: Settings, limit: int 
         if remaining <= 0:
             break
         filters = [
-            Item.source_id == source.id,
+            _item_has_source([source.id]),
             Item.summary_status == SummaryStatus.not_configured.value,
         ]
         if source.auto_summary_enabled:
@@ -908,6 +976,10 @@ def reconcile_auto_summary_statuses(db: Session, settings: Settings, limit: int 
             .limit(remaining)
         ).scalars().all()
         for item in items:
+            if _item_has_ready_summary(db, item.id):
+                item.summary_status = SummaryStatus.ready.value
+                changed += 1
+                continue
             item.summary_status = SummaryStatus.skipped.value
             changed += 1
     if changed:
@@ -937,13 +1009,18 @@ def query_items(
         subscribed_ids = subscribed_source_ids(db)
         if not subscribed_ids:
             return [], 0
-        filters.append(Item.source_id.in_(subscribed_ids))
+        filters.append(_item_has_source(subscribed_ids))
     if content_type:
         filters.append(Item.content_type == content_type)
     if source_id:
-        filters.append(Item.source_id.in_(source_id))
+        filters.append(_item_has_source(source_id))
     if platform:
-        filters.append(Item.platform == platform)
+        filters.append(
+            select(ItemSource.id)
+            .join(Source, Source.id == ItemSource.source_id)
+            .where(ItemSource.item_id == Item.id, Source.platform == platform)
+            .exists()
+        )
     if summary_status:
         filters.append(Item.summary_status == summary_status)
     if read is not None:
@@ -955,7 +1032,8 @@ def query_items(
     if since:
         days = {"today": 1, "3d": 3, "7d": 7}.get(since)
         if days:
-            filters.append(Item.published_at >= datetime.now(timezone.utc) - timedelta(days=days))
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+            filters.append(or_(Item.published_at >= cutoff, and_(Item.published_at.is_(None), Item.created_at >= cutoff)))
     if q:
         term = f"%{q}%"
         filters.append(
@@ -967,17 +1045,31 @@ def query_items(
                 Item.authors.ilike(term),
                 Item.source_name.ilike(term),
                 Item.tags.ilike(term),
+                select(ItemSource.id)
+                .where(
+                    ItemSource.item_id == Item.id,
+                    or_(ItemSource.source_name.ilike(term), ItemSource.tags.ilike(term)),
+                )
+                .exists(),
             )
         )
     if source_group:
-        stmt = stmt.join(Source, Source.id == Item.source_id)
-        filters.append(Source.group == source_group)
+        filters.append(
+            select(ItemSource.id)
+            .join(Source, Source.id == ItemSource.source_id)
+            .where(ItemSource.item_id == Item.id, Source.group == source_group)
+            .exists()
+        )
     if filters:
         stmt = stmt.where(and_(*filters))
     count_stmt = select(func.count()).select_from(stmt.subquery())
     total = db.execute(count_stmt).scalar_one()
     rows = db.execute(stmt.order_by(Item.published_at.desc().nullslast(), Item.created_at.desc()).offset(offset).limit(limit)).scalars().all()
     return rows, total
+
+
+def _item_has_source(source_ids: list[str]) -> Any:
+    return select(ItemSource.id).where(ItemSource.item_id == Item.id, ItemSource.source_id.in_(source_ids)).exists()
 
 
 async def persist_entries(db: Session, source: Source, entries: list[Any], settings: Settings) -> tuple[int, int, int]:
@@ -1003,8 +1095,10 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
         if not text_matches(text_for_filter, include, exclude):
             continue
         raw_count += 1
-        canonical = canonicalize_url(entry.url) or stable_hash(source.id, entry.title)
-        entry_hash = stable_hash(source.id, canonical, entry.title)
+        canonical = canonical_url_for_entry(entry)
+        dedupe_key = dedupe_key_for_entry(source, entry, canonical)
+        item_canonical = canonical or dedupe_key
+        entry_hash = stable_hash(source.id, item_canonical, entry.title)
         existing_raw = db.execute(select(RawEntry.id).where(RawEntry.source_id == source.id, RawEntry.entry_hash == entry_hash)).scalar_one_or_none()
         if not existing_raw:
             raw = RawEntry(
@@ -1019,13 +1113,14 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
             )
             db.add(raw)
             db.flush()
-        item = db.execute(select(Item).where(Item.source_id == source.id, Item.canonical_url == canonical)).scalar_one_or_none()
+        item = db.execute(select(Item).where(Item.dedupe_key == dedupe_key)).scalar_one_or_none()
         entry_summary = strip_html(entry.summary)
         raw_text = strip_html(entry.content or entry.summary)
         if not item:
             item = Item(
                 source_id=source.id,
-                canonical_url=canonical,
+                dedupe_key=dedupe_key,
+                canonical_url=item_canonical,
                 title=entry.title,
                 chinese_title="",
                 url=entry.url,
@@ -1044,10 +1139,18 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
             db.flush()
             item_count += 1
         else:
-            item.title = entry.title or item.title
-            item.summary = entry_summary or item.summary
-            item.raw_text = raw_text or item.raw_text
-            item.published_at = entry.published_at or item.published_at
+            item.title = _prefer_text(item.title, entry.title)
+            item.summary = _prefer_text(item.summary, entry_summary)
+            item.raw_text = _prefer_text(item.raw_text, raw_text)
+            item.published_at = item.published_at or entry.published_at
+            item.authors = dumps(_merge_list_values(loads(item.authors, []), entry.authors))
+            item.tags = dumps(_merge_list_values(loads(item.tags, []), default_tags))
+            item.entities = dumps(_merge_list_values(loads(item.entities, []), extract_entities(f"{entry.title}\n{entry.summary}")))
+            if not item.url and entry.url:
+                item.url = entry.url
+            if not item.canonical_url and item_canonical:
+                item.canonical_url = item_canonical
+        upsert_item_source(db, item, source, entry.url, item_canonical, default_tags)
         should_fetch_detail = mode == "detail_only" or (
             mode == "feed_then_detail"
             and item.url
@@ -1091,6 +1194,64 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
             queue_job(db, "summarize_item", {"item_id": item.id})
     db.commit()
     return raw_count, item_count, fulltext_success
+
+
+def dedupe_key_for_entry(source: Source, entry: Any, canonical_url: str) -> str:
+    raw_payload = entry.raw_payload if isinstance(entry.raw_payload, dict) else {}
+    candidate_values = [canonical_url, entry.url, str(raw_payload.get("id") or raw_payload.get("guid") or "")]
+    for link in raw_payload.get("links", []) if isinstance(raw_payload.get("links"), list) else []:
+        if isinstance(link, dict):
+            candidate_values.append(str(link.get("href") or ""))
+    return dedupe_key_from_parts(canonical_url, entry.title, entry.published_at, source.platform or source.id, *candidate_values)
+
+
+def canonical_url_for_entry(entry: Any) -> str:
+    raw_payload = entry.raw_payload if isinstance(entry.raw_payload, dict) else {}
+    links = raw_payload.get("links", [])
+    if isinstance(links, list):
+        for rel in ["canonical", "alternate"]:
+            for link in links:
+                if isinstance(link, dict) and str(link.get("rel") or "").lower() == rel:
+                    canonical = canonicalize_url(str(link.get("href") or ""))
+                    if canonical:
+                        return canonical
+    return canonicalize_url(entry.url)
+
+
+def upsert_item_source(db: Session, item: Item, source: Source, url: str, canonical_url: str, tags: list[str]) -> ItemSource:
+    row = db.execute(
+        select(ItemSource).where(ItemSource.item_id == item.id, ItemSource.source_id == source.id)
+    ).scalar_one_or_none()
+    if not row:
+        row = ItemSource(item_id=item.id, source_id=source.id)
+        db.add(row)
+    row.source_name = source.name
+    row.url = url or row.url
+    row.canonical_url = canonical_url or row.canonical_url
+    row.tags = dumps(_merge_list_values(loads(row.tags, []), tags))
+    row.last_seen_at = utcnow()
+    return row
+
+
+def _prefer_text(current: str, candidate: str) -> str:
+    if not candidate:
+        return current
+    if not current:
+        return candidate
+    return candidate if len(candidate.strip()) > len(current.strip()) else current
+
+
+def _merge_list_values(*values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    merged: list[str] = []
+    for value_list in values:
+        for value in value_list or []:
+            value = str(value).strip()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            merged.append(value)
+    return merged
 
 
 def _feed_text_needs_detail(raw_text: str, summary: str, min_chars: int) -> bool:

@@ -159,10 +159,11 @@ class RawEntry(Base):
 
 class Item(Base):
     __tablename__ = "items"
-    __table_args__ = (UniqueConstraint("source_id", "canonical_url", name="uq_item_source_url"),)
+    __table_args__ = (UniqueConstraint("dedupe_key", name="uq_items_dedupe_key"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), index=True)
+    dedupe_key: Mapped[str] = mapped_column(String(180), default=lambda: f"item:{uuid4()}")
     canonical_url: Mapped[str] = mapped_column(Text, index=True)
     title: Mapped[str] = mapped_column(Text, default="")
     chinese_title: Mapped[str] = mapped_column(Text, default="")
@@ -184,6 +185,25 @@ class Item(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     source: Mapped[Source] = relationship(back_populates="items")
+    sources: Mapped[list["ItemSource"]] = relationship(back_populates="item", cascade="all, delete-orphan")
+
+
+class ItemSource(Base):
+    __tablename__ = "item_sources"
+    __table_args__ = (UniqueConstraint("item_id", "source_id", name="uq_item_sources_item_source"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), index=True)
+    source_id: Mapped[str] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), index=True)
+    source_name: Mapped[str] = mapped_column(String(255), default="")
+    url: Mapped[str] = mapped_column(Text, default="")
+    canonical_url: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[str] = mapped_column(Text, default="[]")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    item: Mapped[Item] = relationship(back_populates="sources")
+    source: Mapped[Source] = relationship()
 
 
 class Fulltext(Base):
