@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Protocol
 from typing import Any
 from urllib.parse import urljoin
 
@@ -38,6 +39,11 @@ class AdapterError(RuntimeError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class Adapter(Protocol):
+    async def fetch(self, attempt: SourceAttempt, settings: Settings) -> AdapterResult:
+        ...
 
 
 def _entry_content(entry: Any) -> str:
@@ -125,13 +131,18 @@ async def fetch_html_index(url: str, timeout: int = 20) -> AdapterResult:
     return AdapterResult(entries=entries, warnings=["HTML index fallback has lower field fidelity."], used_url=url)
 
 
-async def run_attempt(attempt: SourceAttempt, settings: Settings) -> AdapterResult:
-    if attempt.adapter == "feed":
-        return await fetch_feed(attempt.url)
-    if attempt.adapter == "rsshub":
+class FeedAdapter:
+    async def fetch(self, attempt: SourceAttempt, settings: Settings) -> AdapterResult:
+        config = loads(attempt.config, {})
+        timeout = int(config.get("timeout_seconds", config.get("timeout", 20)))
+        return await fetch_feed(attempt.url, timeout=timeout)
+
+
+class RsshubAdapter:
+    async def fetch(self, attempt: SourceAttempt, settings: Settings) -> AdapterResult:
         route = attempt.route or attempt.url
         config = loads(attempt.config, {})
-        timeout = int(config.get("timeout", RSSHUB_TIMEOUT_SECONDS))
+        timeout = int(config.get("timeout_seconds", config.get("timeout", RSSHUB_TIMEOUT_SECONDS)))
         if route.startswith("http://") or route.startswith("https://"):
             return await fetch_feed(route, timeout=timeout)
         errors: list[str] = []
@@ -146,30 +157,48 @@ async def run_attempt(attempt: SourceAttempt, settings: Settings) -> AdapterResu
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{instance}: {type(exc).__name__} {exc}")
         raise AdapterError("rsshub_failed", "\n".join(errors) or "All RSSHub instances failed")
-    if attempt.adapter == "html_index":
-        return await fetch_html_index(attempt.url)
+
+
+class HtmlIndexAdapter:
+    async def fetch(self, attempt: SourceAttempt, settings: Settings) -> AdapterResult:
+        config = loads(attempt.config, {})
+        timeout = int(config.get("timeout_seconds", config.get("timeout", 20)))
+        return await fetch_html_index(attempt.url, timeout=timeout)
+
+
+ADAPTERS: dict[str, Adapter] = {
+    "feed": FeedAdapter(),
+    "rsshub": RsshubAdapter(),
+    "html_index": HtmlIndexAdapter(),
+}
+
+
+async def run_attempt(attempt: SourceAttempt, settings: Settings) -> AdapterResult:
     if attempt.adapter == "manual":
         raise AdapterError("manual_not_supported", "Manual import is reserved for a later workflow.")
-    raise AdapterError("unknown_adapter", f"Unsupported adapter: {attempt.adapter}")
+    adapter = ADAPTERS.get(attempt.adapter)
+    if not adapter:
+        raise AdapterError("unknown_adapter", f"Unsupported adapter: {attempt.adapter}")
+    return await adapter.fetch(attempt, settings)
 
 
-async def preview_source(url: str | None, route: str | None, adapter: str, settings: Settings) -> AdapterResult:
+async def preview_source(url: str | None, route: str | None, adapter: str, settings: Settings, timeout_seconds: int = 20) -> AdapterResult:
     warnings: list[str] = []
     if adapter == "rsshub":
-        attempt = SourceAttempt(kind="rsshub", adapter="rsshub", url=url or "", route=route or "")
+        attempt = SourceAttempt(kind="rsshub", adapter="rsshub", url=url or "", route=route or "", config=dumps({"timeout_seconds": timeout_seconds}))
         return await run_attempt(attempt, settings)
     if adapter == "html_index":
         if not url:
             raise AdapterError("missing_url", "URL is required for HTML preview")
-        return await fetch_html_index(url)
+        return await fetch_html_index(url, timeout=timeout_seconds)
     if not url:
         raise AdapterError("missing_url", "URL is required")
     feed_url, discover_warnings = await discover_feed(url)
     warnings.extend(discover_warnings)
     if feed_url:
-        result = await fetch_feed(feed_url)
+        result = await fetch_feed(feed_url, timeout=timeout_seconds)
         result.warnings = warnings + result.warnings
         return result
-    result = await fetch_html_index(url)
+    result = await fetch_html_index(url, timeout=timeout_seconds)
     result.warnings = warnings + result.warnings
     return result

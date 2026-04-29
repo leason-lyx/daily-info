@@ -1,0 +1,48 @@
+schema_version: 1
+sources:
+  - id: huggingface-blog
+    title: Hugging Face Blog
+    kind: blog
+    platform: huggingface
+    homepage: https://huggingface.co/blog
+    group: Engineering Blogs
+    language: en
+    tags: [huggingface]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://huggingface.co/blog/feed.xml
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
+  - id: nvidia-blog
+    title: NVIDIA Blog
+    kind: blog
+    platform: nvidia
+    homepage: https://blogs.nvidia.com/
+    group: Engineering Blogs
+    language: en
+    tags: [nvidia, ai]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://blogs.nvidia.com/feed/
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none

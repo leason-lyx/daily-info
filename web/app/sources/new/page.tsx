@@ -2,7 +2,7 @@
 
 import { FormEvent, useState } from "react";
 import { Eye, Save } from "lucide-react";
-import { api, Source } from "@/lib/api";
+import { api, SourceDefinitionInput } from "@/lib/api";
 
 function slugify(value: string) {
   return value.toLowerCase().replace(/https?:\/\//, "").replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 72);
@@ -47,27 +47,26 @@ export default function NewSourcePage() {
       setMessage("Name, URL, or RSSHub route is required.");
       return;
     }
-    const source: Source = {
+    const source: SourceDefinitionInput = {
       id,
-      name: name || id,
-      content_type: contentType,
+      title: name || id,
+      kind: contentType,
       platform: platformFromInput(url, route),
-      homepage_url: url,
-      enabled: true,
-      is_builtin: false,
+      homepage: url,
       group: contentType === "paper" ? "Papers" : contentType === "post" ? "Posts" : "Blogs",
       priority: 100,
-      poll_interval: 3600,
-      auto_summary_enabled: contentType !== "paper",
-      auto_summary_days: 7,
-      language_hint: "auto",
-      include_keywords: [],
-      exclude_keywords: [],
-      default_tags: [contentType],
-      attempts: [{ kind: adapter === "rsshub" ? "rsshub" : "direct", adapter, url, route, priority: 0, enabled: true, config: {} }],
-      fulltext: { strategy: contentType === "blog" ? "generic_article" : "feed_field" },
-      auth_mode: "none",
-      stability_level: "user",
+      language: "auto",
+      tags: [contentType],
+      fetch: {
+        strategy: "first_success",
+        interval_seconds: 3600,
+        attempts: [{ adapter: adapter as "feed" | "rsshub" | "html_index", url, route, timeout_seconds: 20 }],
+      },
+      fulltext: { mode: contentType === "blog" ? "detail_only" : "feed_only", max_detail_pages_per_run: 20 },
+      summary: { auto: contentType !== "paper", window_days: 7 },
+      filters: { include_keywords: [], exclude_keywords: [] },
+      auth: { mode: "none" },
+      stability: "user",
     };
     try {
       const created = await api.createSource(source);

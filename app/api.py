@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.adapters import AdapterError, preview_source
 from app.db import get_db, init_db
 from app.jobs import schedule_auto_summaries, schedule_due_sources
-from app.models import Item, Job, JobStatus, Setting, Source, SourceRun, Summary, SummaryStatus
+from app.models import Item, Job, JobStatus, Setting, Source, SourceRun, SourceSubscription, Summary, SummaryStatus
 from app.schemas import (
     AiProviderTestResult,
     ItemListOut,
@@ -19,17 +19,21 @@ from app.schemas import (
     PreviewResponse,
     SettingsOut,
     SettingsPatch,
+    SourceDefinitionIn,
+    SourceDefinitionOut,
     SourceIn,
     SourceOut,
     SourcePatch,
+    SourceSubscriptionOut,
 )
 from app.services import (
     content_audit_for_source,
+    create_source_definition,
     create_source_model,
     export_source_pack,
     import_source_pack,
     item_to_out,
-    list_sources,
+    list_source_definitions,
     load_runtime_settings,
     llm_usage_stats,
     latest_runs,
@@ -43,6 +47,7 @@ from app.services import (
     source_summary_stats,
     source_to_out,
 )
+from app.subscriptions import subscribe_source, subscription_to_dict, unsubscribe_source
 from app.summary import summarize_codex_cli, summarize_openai_compatible
 from app.utils import dumps, loads
 
@@ -75,6 +80,7 @@ def get_items(
     source_id: list[str] | None = Query(default=None),
     source_group: str | None = None,
     platform: str | None = None,
+    include_unsubscribed: bool = False,
     q: str | None = None,
     since: str | None = None,
     summary_status: str | None = None,
@@ -84,7 +90,7 @@ def get_items(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> ItemListOut:
-    items, total = query_items(db, content_type, source_id, source_group, platform, q, since, summary_status, read, starred, hidden, limit, offset)
+    items, total = query_items(db, content_type, source_id, source_group, platform, include_unsubscribed, q, since, summary_status, read, starred, hidden, limit, offset)
     return ItemListOut(items=[item_to_out(item, db) for item in items], total=total)
 
 
@@ -134,13 +140,60 @@ def resummarize(item_id: str, db: Db):
     return item_to_out(item, db)
 
 
-@app.get("/api/sources", response_model=list[SourceOut])
+@app.get("/api/source-definitions", response_model=list[SourceDefinitionOut])
+def get_source_definitions(db: Db):
+    return list_source_definitions(db)
+
+
+@app.get("/api/sources", response_model=list[SourceDefinitionOut])
 def get_sources(db: Db):
-    return list_sources(db)
+    return list_source_definitions(db)
 
 
-@app.post("/api/sources", response_model=SourceOut)
-def create_source(payload: SourceIn, db: Db):
+@app.post("/api/source-definitions", response_model=SourceDefinitionOut)
+def create_source_catalog_entry(payload: SourceDefinitionIn, db: Db):
+    try:
+        return create_source_definition(db, payload, subscribe=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/sources", response_model=SourceDefinitionOut)
+def create_source(payload: SourceDefinitionIn, db: Db):
+    try:
+        return create_source_definition(db, payload, subscribe=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/subscriptions", response_model=list[SourceSubscriptionOut])
+def get_subscriptions(db: Db):
+    return [
+        SourceSubscriptionOut(**subscription_to_dict(subscription))
+        for subscription in db.execute(select(SourceSubscription).where(SourceSubscription.subscribed.is_(True))).scalars()
+    ]
+
+
+@app.post("/api/subscriptions/{source_id}", response_model=SourceSubscriptionOut)
+def subscribe(source_id: str, db: Db):
+    try:
+        subscription = subscribe_source(db, source_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source definition not found") from exc
+    return SourceSubscriptionOut(**subscription_to_dict(subscription))
+
+
+@app.delete("/api/subscriptions/{source_id}", response_model=SourceSubscriptionOut)
+def unsubscribe(source_id: str, db: Db):
+    try:
+        subscription = unsubscribe_source(db, source_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source definition not found") from exc
+    return SourceSubscriptionOut(**subscription_to_dict(subscription))
+
+
+@app.post("/api/legacy/sources", response_model=SourceOut)
+def create_legacy_source(payload: SourceIn, db: Db):
     if db.get(Source, payload.id):
         raise HTTPException(status_code=409, detail="Source id already exists")
     source = create_source_model(payload)
@@ -168,14 +221,24 @@ def update_source(source_id: str, payload: SourcePatch, db: Db):
 def fetch_source_now(source_id: str, db: Db):
     if not db.get(Source, source_id):
         raise HTTPException(status_code=404, detail="Source not found")
+    subscription = db.get(SourceSubscription, source_id)
+    if not subscription or not subscription.subscribed:
+        raise HTTPException(status_code=409, detail="Subscribe source before fetching")
     job = queue_job(db, "fetch_source", {"source_id": source_id})
     return {"job_id": job.id, "status": job.status}
 
 
 @app.post("/api/sources/preview", response_model=PreviewResponse)
 async def source_preview(payload: PreviewRequest, db: Db):
+    preview_attempt = payload.attempt
+    if payload.source and payload.source.fetch.attempts:
+        preview_attempt = payload.source.fetch.attempts[0]
+    adapter = preview_attempt.adapter if preview_attempt else payload.adapter
+    url = preview_attempt.url if preview_attempt else payload.url
+    route = preview_attempt.route if preview_attempt else payload.route
+    timeout_seconds = preview_attempt.timeout_seconds if preview_attempt else 20
     try:
-        result = await preview_source(payload.url, payload.route, payload.adapter, load_runtime_settings(db))
+        result = await preview_source(url, route, adapter, load_runtime_settings(db), timeout_seconds=timeout_seconds)
     except AdapterError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": exc.message}) from exc
     entries = [
@@ -189,7 +252,7 @@ async def source_preview(payload: PreviewRequest, db: Db):
         }
         for entry in result.entries[:5]
     ]
-    return PreviewResponse(detected_adapter=payload.adapter, entries=entries, warnings=result.warnings, used_url=result.used_url)
+    return PreviewResponse(detected_adapter=adapter, entries=entries, warnings=result.warnings, used_url=result.used_url)
 
 
 @app.post("/api/sources/import")
@@ -284,7 +347,7 @@ def _job_health(db: Session) -> dict:
 @app.get("/api/health")
 def health(db: Db):
     runs = db.execute(select(SourceRun).order_by(SourceRun.id.desc()).limit(50)).scalars().all()
-    sources = db.execute(select(Source)).scalars().all()
+    sources = db.execute(select(Source).options(selectinload(Source.subscription))).scalars().all()
     items_total = db.execute(select(func.count(Item.id))).scalar_one()
     items_24h = db.execute(select(func.count(Item.id)).where(Item.created_at >= datetime.now(timezone.utc) - timedelta(days=1))).scalar_one()
     summary_total = db.execute(select(func.count(Summary.id))).scalar_one()
@@ -301,6 +364,7 @@ def health(db: Db):
     source_health = []
     degraded_sources = []
     for source in sources:
+        subscribed = bool(source.subscription and source.subscription.subscribed)
         latest = latest_by_source.get(source.id)
         recent_source_runs = [run for run in runs if run.source_id == source.id]
         consecutive_failures = 0
@@ -336,13 +400,14 @@ def health(db: Db):
             degraded_reasons.append("fulltext_incomplete")
         if summary_failure_rate is not None and summary_failed_count and summary_failure_rate > 0.2:
             degraded_reasons.append("summary_failures")
-        if degraded_reasons:
+        if degraded_reasons and subscribed:
             degraded_sources.append({"id": source.id, "name": source.name, "reason": ", ".join(degraded_reasons)})
         source_health.append(
             {
                 "id": source.id,
                 "name": source.name,
-                "enabled": source.enabled,
+                "enabled": subscribed,
+                "subscribed": subscribed,
                 "auto_summary_enabled": source.auto_summary_enabled,
                 "auto_summary_days": source.auto_summary_days,
                 "content_audit": content_audit,

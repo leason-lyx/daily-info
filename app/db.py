@@ -71,10 +71,32 @@ def _migrate_sqlite_schema() -> None:
                 _add_sqlite_column(conn, "ALTER TABLE sources ADD COLUMN auto_summary_days INTEGER NOT NULL DEFAULT 7")
             if "fulltext" not in source_columns:
                 _add_sqlite_column(conn, "ALTER TABLE sources ADD COLUMN fulltext TEXT NOT NULL DEFAULT '{\"strategy\":\"feed_field\"}'")
+            if "fetch" not in source_columns:
+                _add_sqlite_column(conn, "ALTER TABLE sources ADD COLUMN fetch TEXT NOT NULL DEFAULT '{}'")
+            if "summary" not in source_columns:
+                _add_sqlite_column(conn, "ALTER TABLE sources ADD COLUMN summary TEXT NOT NULL DEFAULT '{}'")
+            if "auth" not in source_columns:
+                _add_sqlite_column(conn, "ALTER TABLE sources ADD COLUMN auth TEXT NOT NULL DEFAULT '{\"mode\":\"none\"}'")
+            if "spec_json" not in source_columns:
+                _add_sqlite_column(conn, "ALTER TABLE sources ADD COLUMN spec_json TEXT NOT NULL DEFAULT '{}'")
+            if "spec_hash" not in source_columns:
+                _add_sqlite_column(conn, "ALTER TABLE sources ADD COLUMN spec_hash VARCHAR(64) NOT NULL DEFAULT ''")
+            if "catalog_file" not in source_columns:
+                _add_sqlite_column(conn, "ALTER TABLE sources ADD COLUMN catalog_file TEXT NOT NULL DEFAULT ''")
             if "auth_mode" not in source_columns:
                 _add_sqlite_column(conn, "ALTER TABLE sources ADD COLUMN auth_mode VARCHAR(40) NOT NULL DEFAULT 'none'")
             if "stability_level" not in source_columns:
                 _add_sqlite_column(conn, "ALTER TABLE sources ADD COLUMN stability_level VARCHAR(40) NOT NULL DEFAULT 'stable'")
+        if {"sources", "source_subscriptions"}.issubset(tables):
+            conn.execute(
+                text(
+                    "INSERT INTO source_subscriptions (source_id, subscribed, priority_override, settings_override, created_at, updated_at) "
+                    "SELECT sources.id, 1, NULL, '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP "
+                    "FROM sources "
+                    "LEFT JOIN source_subscriptions ON source_subscriptions.source_id = sources.id "
+                    "WHERE sources.enabled = 1 AND source_subscriptions.source_id IS NULL"
+                )
+            )
         if "source_attempts" in tables:
             attempt_columns = {column["name"] for column in inspector.get_columns("source_attempts")}
             if "config" not in attempt_columns:

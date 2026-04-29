@@ -183,8 +183,9 @@ function FeedView() {
     api.getSources()
       .then((sourceRows) => {
         if (!alive) return;
-        setSources(sourceRows);
-        return api.getItems(itemQueryFromFilters(query, sourceRows));
+        const subscribedRows = sourceRows.filter((source) => source.subscribed);
+        setSources(subscribedRows);
+        return api.getItems(itemQueryFromFilters(query, subscribedRows));
       })
       .then((feed) => {
         if (!alive || !feed) return;
@@ -486,7 +487,7 @@ function FeedView() {
         })}
         {!items.length && !error && (
           <div className="empty">
-            <Search size={22} /> No items yet. Enable a source and run fetch.
+            <Search size={22} /> No items yet. Subscribe to a source and run fetch.
           </div>
         )}
       </section>

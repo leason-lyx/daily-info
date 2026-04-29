@@ -10,11 +10,16 @@ function apiBase() {
 
 export type Source = {
   id: string;
+  title: string;
+  kind: "paper" | "blog" | "post";
   name: string;
   content_type: "paper" | "blog" | "post";
   platform: string;
+  homepage: string;
   homepage_url: string;
+  language: string;
   enabled: boolean;
+  subscribed: boolean;
   is_builtin: boolean;
   group: string;
   priority: number;
@@ -26,6 +31,12 @@ export type Source = {
   exclude_keywords: string[];
   default_tags: string[];
   attempts: SourceAttempt[];
+  fetch: SourceFetch;
+  summary: SourceSummary;
+  auth: Record<string, unknown>;
+  runtime?: SourceRuntime | null;
+  spec_hash?: string;
+  catalog_file?: string;
   fulltext: Record<string, unknown>;
   content_audit?: Record<string, unknown>;
   auth_mode: string;
@@ -42,6 +53,52 @@ export type SourceAttempt = {
   priority: number;
   enabled: boolean;
   config: Record<string, unknown>;
+};
+
+export type SourceFetchAttempt = {
+  adapter: "feed" | "rsshub" | "html_index";
+  url?: string;
+  route?: string;
+  timeout_seconds?: number;
+  selectors?: string[];
+  limit?: number;
+};
+
+export type SourceFetch = {
+  strategy: "first_success";
+  interval_seconds: number;
+  attempts: SourceFetchAttempt[];
+};
+
+export type SourceSummary = {
+  auto: boolean;
+  window_days: number;
+};
+
+export type SourceRuntime = {
+  last_run_at?: string | null;
+  last_success_at?: string | null;
+  failure_count: number;
+  empty_count: number;
+  last_error: string;
+};
+
+export type SourceDefinitionInput = {
+  id: string;
+  title: string;
+  kind: "paper" | "blog" | "post";
+  platform: string;
+  homepage: string;
+  language: string;
+  tags: string[];
+  group: string;
+  priority?: number;
+  fetch: SourceFetch;
+  fulltext: Record<string, unknown>;
+  summary: SourceSummary;
+  filters?: { include_keywords?: string[]; exclude_keywords?: string[] };
+  auth?: Record<string, unknown>;
+  stability?: string;
 };
 
 export type LatestRun = {
@@ -201,9 +258,12 @@ function readableError(text: string, fallback: string) {
 export const api = {
   getItems: (query: URLSearchParams) => request<{ items: Item[]; total: number }>(`/api/items?${query.toString()}`),
   getItem: (id: string) => request<Item>(`/api/items/${id}`),
-  getSources: () => request<Source[]>("/api/sources"),
+  getSources: () => request<Source[]>("/api/source-definitions"),
+  getSubscriptions: () => request<Array<{ source_id: string; subscribed: boolean }>>("/api/subscriptions"),
+  subscribeSource: (id: string) => request<{ source_id: string; subscribed: boolean }>(`/api/subscriptions/${id}`, { method: "POST" }),
+  unsubscribeSource: (id: string) => request<{ source_id: string; subscribed: boolean }>(`/api/subscriptions/${id}`, { method: "DELETE" }),
   patchSource: (id: string, body: Partial<Source>) => request<Source>(`/api/sources/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  createSource: (body: Source) => request<Source>("/api/sources", { method: "POST", body: JSON.stringify(body) }),
+  createSource: (body: SourceDefinitionInput) => request<Source>("/api/source-definitions", { method: "POST", body: JSON.stringify(body) }),
   fetchSource: (id: string) => request<{ job_id: number; status: string }>(`/api/sources/${id}/fetch`, { method: "POST" }),
   previewSource: (body: Record<string, unknown>) => request<Record<string, unknown>>("/api/sources/preview", { method: "POST", body: JSON.stringify(body) }),
   markItem: (id: string, action: "read" | "star" | "hide") => request<Item>(`/api/items/${id}/${action}`, { method: "POST", body: JSON.stringify({}) }),

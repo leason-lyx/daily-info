@@ -9,12 +9,13 @@ from urllib.parse import urlparse
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.catalog import DEFAULT_SOURCE_PACK_PATH
+from app.catalog import SOURCE_CATALOG_DIR
 from app.config import get_settings
 from app.db import SessionLocal, init_db
 from app.jobs import fetch_source_job
 from app.models import Fulltext, Item, Source
-from app.services import content_audit_for_source, latest_runs, load_source_pack, sync_default_source_pack, source_content_stats
+from app.services import content_audit_for_source, latest_runs, sync_default_source_pack, source_content_stats
+from app.source_catalog import load_source_catalog
 from app.utils import dumps, loads
 
 
@@ -40,7 +41,7 @@ def backup_sqlite_database(database_url: str) -> Path:
 
 
 def apply_recommended_default_strategies() -> list[str]:
-    defaults = {source.id: source for source in load_source_pack(DEFAULT_SOURCE_PACK_PATH)}
+    defaults = {source.id: source for source, _catalog_file in load_source_catalog(SOURCE_CATALOG_DIR)}
     changed: list[str] = []
     with SessionLocal() as db:
         sources = db.execute(select(Source).options(selectinload(Source.attempts))).scalars().all()
@@ -48,11 +49,18 @@ def apply_recommended_default_strategies() -> list[str]:
             default_source = defaults.get(source.id)
             if not default_source:
                 continue
-            next_fulltext = default_source.fulltext
+            next_fulltext = default_source.fulltext.model_dump(mode="json")
             if loads(source.fulltext, {}) != next_fulltext:
                 source.fulltext = dumps(next_fulltext)
                 changed.append(f"{source.id}: fulltext")
-            configs = {(attempt.adapter, attempt.route or attempt.url): attempt.config for attempt in default_source.attempts}
+            configs = {
+                (attempt.adapter, attempt.route or attempt.url): {
+                    "timeout_seconds": attempt.timeout_seconds,
+                    "selectors": attempt.selectors,
+                    "limit": attempt.limit,
+                }
+                for attempt in default_source.fetch.attempts
+            }
             for attempt in source.attempts:
                 key = (attempt.adapter, attempt.route or attempt.url)
                 if key not in configs:
