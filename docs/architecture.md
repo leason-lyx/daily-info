@@ -27,7 +27,7 @@ Source Catalog
   -> fetch_source job
   -> Adapter
   -> RawEntry
-  -> Item
+  -> Item / ItemSource
   -> Fulltext
   -> summarize_item job
   -> API
@@ -39,6 +39,7 @@ Source Catalog
 - `config/sources/*.yaml` 是内置 catalog 定义，不是运行时 secret 存储。
 - 启动时 API 会同步 catalog 到数据库。
 - 只有已订阅 source 会被 scheduler 抓取，并默认进入 feed。
+- Item 使用确定性 `dedupe_key` 做跨 source 去重；`item_sources` 是来源归属的事实表，source 过滤、订阅过滤、health 统计、source audit 和摘要队列都按它计算。
 - item 入库不等待 AI 摘要完成。
 - 抓取、全文和摘要失败都应可观察，但不应阻断历史内容浏览。
 

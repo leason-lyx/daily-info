@@ -6,7 +6,7 @@ Daily Info 是一个自托管的信息阅读台，用来聚合论文、工程博
 
 ## 功能特性
 
-- 统一 Feed：支持论文、博客、帖子，带搜索、来源筛选、摘要状态、已读/收藏/隐藏和标签。
+- 统一 Feed：支持论文、博客、帖子，带搜索、来源筛选、确定性跨来源去重、摘要状态、已读/收藏/隐藏和标签。
 - Source Catalog：内置信息源定义来自 `config/sources/*.yaml`，用户显式订阅后才会抓取并进入默认 Feed。
 - 信息源预览与创建：支持 RSS/Atom、RSSHub route，以及 HTML 列表页 fallback。
 - 后台 worker 和 scheduler：负责抓取、全文提取和可选的自动摘要任务。
@@ -71,6 +71,8 @@ Catalog 是显式订阅模式：
 - 只有已订阅 source 会被 scheduler 抓取。
 - 只有已订阅 source 会进入默认 Feed。
 - 未订阅 source 仍会显示在 Source Catalog 中，便于发现和开启。
+
+当同一内容出现在多个 source 中时，Daily Info 只保存一条由 `dedupe_key` 标识的 item，并通过 `item_sources` 记录全部来源。Feed 和 API 会通过 `sources[]` 返回这些来源；单个 `source_id/source_name` 仅表示主展示来源和旧客户端兼容字段。
 
 Source definition 可以包含抓取方式、全文策略、摘要策略、过滤规则、标签、分组和元数据。它们应该被视为公开配置，不应包含 API key、cookie、token 或其他 secret。未来如果某个 source 需要认证，catalog 中只保存 secret 引用名，真实 secret 放在运行时配置里。
 
@@ -155,6 +157,8 @@ docker compose up --build -d --force-recreate api worker scheduler web
 curl -fsS http://127.0.0.1:8000/api/health
 curl -fsS http://127.0.0.1:8000/api/source-definitions
 ```
+
+如果改动涉及 UI 或 Feed 行为，还需要打开 Docker Compose 启动的前端页面，在浏览器里验证受影响流程。
 
 ## 安全说明
 

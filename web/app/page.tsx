@@ -105,6 +105,17 @@ function fallbackSnippet(item: Item) {
   return text ? `${text.slice(0, 360)}${text.length > 360 ? "..." : ""}` : "No summary text available yet.";
 }
 
+function itemSourceRows(item: Item) {
+  const rows = item.sources?.length ? item.sources : [{ source_id: item.source_id, source_name: item.source_name, url: item.url, tags: item.tags }];
+  return rows.filter((source) => source.source_id || source.source_name);
+}
+
+function sourceTitle(item: Item) {
+  const rows = itemSourceRows(item);
+  if (rows.length <= 1) return item.source_name;
+  return rows.map((source) => source.source_name || source.source_id).join("\n");
+}
+
 function selectedIdsFromParams(sourceRows: Source[], sourceParams: string[], legacyContentType: string | null) {
   if (sourceParams.includes(NO_SOURCE_SENTINEL)) return new Set<string>();
   if (sourceParams.length) return new Set(sourceParams);
@@ -327,8 +338,8 @@ function FeedView() {
           <div className="sourceFilterHead">
             <label>Type / Source</label>
             <div className="sourceFilterTools">
-              <button type="button" onClick={() => setSourceFilter(sources.map((source) => source.id))}>All</button>
-              <button type="button" onClick={() => setSourceFilter([])}>None</button>
+              <button type="button" onClick={() => setSourceFilter(sources.map((source) => source.id))} disabled={!sources.length}>All</button>
+              <button type="button" onClick={() => setSourceFilter([])} disabled={!sources.length}>None</button>
             </div>
           </div>
           <div className="sourceTypeGrid">
@@ -392,6 +403,9 @@ function FeedView() {
           const aiRows = aiSummaryRows(item);
           const hasAiSummary = Boolean(item.ai_summary?.one_sentence);
           const summarizeDisabled = item.summary_status === "pending" || summarizingIds.has(item.id);
+          const itemSources = itemSourceRows(item);
+          const shownSources = itemSources.slice(0, 2);
+          const hiddenSourceCount = Math.max(itemSources.length - shownSources.length, 0);
 
           return (
             <article className="item" key={item.id}>
@@ -406,7 +420,19 @@ function FeedView() {
               </div>
               <div className="itemMetaBlock">
                 <div className="metaPrimary">
-                  <span className="metaSource">{item.source_name}</span>
+                  <span className="sourceLinks" title={sourceTitle(item)}>
+                    {shownSources.map((source) => {
+                      const label = source.source_name || source.source_id;
+                      return source.url ? (
+                        <a className="metaSource" href={source.url} target="_blank" rel="noreferrer" key={source.source_id}>
+                          {label}
+                        </a>
+                      ) : (
+                        <span className="metaSource" key={source.source_id}>{label}</span>
+                      );
+                    })}
+                    {hiddenSourceCount > 0 && <span className="metaSource muted">+{hiddenSourceCount} more</span>}
+                  </span>
                   <span className="metaPill">{item.content_type}</span>
                   <span className="metaPill">{item.platform || "unknown platform"}</span>
                   <time className="metaTime" dateTime={item.published_at || undefined}>

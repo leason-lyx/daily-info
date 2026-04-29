@@ -393,6 +393,7 @@ textarea {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .sourceFilterHead > label {
@@ -429,7 +430,7 @@ textarea {
 
 .sourceTypeGrid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 8px;
 }
 
@@ -645,11 +646,37 @@ textarea {
   min-width: 0;
 }
 
+.sourceLinks {
+  display: inline-flex;
+  max-width: min(100%, 520px);
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
 .metaSource {
+  display: inline-flex;
+  max-width: 240px;
+  min-height: 22px;
+  align-items: center;
+  overflow: hidden;
   color: #26384d;
   font-size: 13px;
   font-weight: 800;
   line-height: 1.2;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metaSource:hover {
+  color: #0f766e;
+  text-decoration: underline;
+}
+
+.metaSource.muted {
+  color: #718198;
 }
 
 .metaPill {

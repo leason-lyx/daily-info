@@ -473,6 +473,253 @@ def test_fetch_run_counts_only_new_summary_jobs_for_source(tmp_path: Path) -> No
     assert result.stdout.strip() == "ok"
 
 
+def test_persist_entries_deduplicates_arxiv_across_categories(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+        from datetime import datetime, timezone
+
+        from sqlalchemy import func, select
+
+        from app.adapters import RawEntryData
+        from app.config import get_settings
+        from app.db import SessionLocal, init_db
+        from app.models import Item, ItemSource, Source
+        from app.services import persist_entries, query_items
+        from app.utils import dumps, loads
+
+        init_db()
+        settings = get_settings()
+        with SessionLocal() as db:
+            ai = Source(id="arxiv-cs-ai", name="arXiv cs.AI", content_type="paper", platform="arxiv", default_tags=dumps(["paper", "ai"]))
+            cl = Source(id="arxiv-cs-cl", name="arXiv cs.CL", content_type="paper", platform="arxiv", default_tags=dumps(["paper", "nlp"]))
+            db.add_all([ai, cl])
+            db.commit()
+
+            first = RawEntryData(
+                title="A Shared Paper",
+                url="https://arxiv.org/abs/2604.21771v1",
+                published_at=datetime(2026, 4, 23, tzinfo=timezone.utc),
+                summary="Short abstract",
+                content="Short abstract",
+                raw_payload={"id": "http://arxiv.org/abs/2604.21771v1"},
+            )
+            second = RawEntryData(
+                title="A Shared Paper",
+                url="https://arxiv.org/abs/2604.21771v2",
+                published_at=datetime(2026, 4, 24, tzinfo=timezone.utc),
+                summary="A longer abstract from another category.",
+                content="A longer abstract from another category.",
+                raw_payload={"id": "http://arxiv.org/abs/2604.21771v2"},
+            )
+
+            assert asyncio.run(persist_entries(db, ai, [first], settings))[1] == 1
+            assert asyncio.run(persist_entries(db, cl, [second], settings))[1] == 0
+            assert db.execute(select(func.count()).select_from(Item)).scalar_one() == 1
+            item = db.execute(select(Item)).scalar_one()
+            assert item.dedupe_key == "arxiv:2604.21771"
+            assert loads(item.tags, []) == ["paper", "ai", "nlp"]
+            sources = db.execute(select(ItemSource).order_by(ItemSource.source_id)).scalars().all()
+            assert [source.source_id for source in sources] == ["arxiv-cs-ai", "arxiv-cs-cl"]
+
+            filtered, total = query_items(db, source_id=["arxiv-cs-cl"], include_unsubscribed=True)
+            assert total == 1
+            assert filtered[0].id == item.id
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "dedupe-arxiv.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_persist_entries_deduplicates_tracking_urls_and_preserves_user_state(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+        from datetime import datetime, timezone
+
+        from sqlalchemy import func, select
+
+        from app.adapters import RawEntryData
+        from app.config import get_settings
+        from app.db import SessionLocal, init_db
+        from app.models import Item, ItemSource, Source
+        from app.services import item_to_out, persist_entries
+        from app.utils import dumps
+
+        init_db()
+        settings = get_settings()
+        with SessionLocal() as db:
+            primary = Source(id="primary", name="Primary", content_type="blog", platform="example", default_tags=dumps(["primary"]))
+            repost = Source(id="repost", name="Repost", content_type="blog", platform="example", default_tags=dumps(["repost"]))
+            db.add_all([primary, repost])
+            db.commit()
+
+            first = RawEntryData(
+                title="Launch Notes",
+                url="https://example.com/news/launch?utm_source=newsletter&b=2&a=1",
+                published_at=datetime(2026, 4, 20, tzinfo=timezone.utc),
+                summary="Short",
+                content="Short",
+            )
+            second = RawEntryData(
+                title="Launch Notes",
+                url="https://example.com/news/launch?a=1&b=2&utm_campaign=social",
+                published_at=datetime(2026, 4, 21, tzinfo=timezone.utc),
+                summary="Longer summary",
+                content="Longer full text from the reposted feed.",
+            )
+
+            asyncio.run(persist_entries(db, primary, [first], settings))
+            item = db.execute(select(Item)).scalar_one()
+            item.read = True
+            item.starred = True
+            db.commit()
+
+            assert asyncio.run(persist_entries(db, repost, [second], settings))[1] == 0
+            assert db.execute(select(func.count()).select_from(Item)).scalar_one() == 1
+            item = db.execute(select(Item)).scalar_one()
+            assert item.read is True
+            assert item.starred is True
+            assert item.raw_text == "Longer full text from the reposted feed."
+            assert db.execute(select(func.count()).select_from(ItemSource)).scalar_one() == 2
+            data = item_to_out(item, db)
+            assert [source.source_id for source in data.sources] == ["primary", "repost"]
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "dedupe-url-state.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_dedupe_handles_legacy_arxiv_ids_and_linkless_titles(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+        from datetime import datetime, timezone
+
+        from sqlalchemy import func, select
+
+        from app.adapters import RawEntryData
+        from app.config import get_settings
+        from app.db import SessionLocal, init_db
+        from app.models import Item, Source
+        from app.services import persist_entries
+
+        init_db()
+        settings = get_settings()
+        with SessionLocal() as db:
+            source = Source(id="math", name="Math", content_type="paper", platform="arxiv")
+            db.add(source)
+            db.commit()
+
+            first = RawEntryData(title="Legacy Arxiv", url="https://arxiv.org/abs/math.CO/0309136v1", raw_payload={"id": "math.CO/0309136v1"})
+            second = RawEntryData(title="Legacy Arxiv", url="https://arxiv.org/pdf/math.CO/0309136v2", raw_payload={"id": "math.CO/0309136v2"})
+            assert asyncio.run(persist_entries(db, source, [first], settings))[1] == 1
+            assert asyncio.run(persist_entries(db, source, [second], settings))[1] == 0
+
+            same_title_a = RawEntryData(title="Untitled Linkless", url="", published_at=datetime(2026, 4, 1, tzinfo=timezone.utc))
+            same_title_b = RawEntryData(title="Untitled Linkless", url="", published_at=datetime(2026, 4, 2, tzinfo=timezone.utc))
+            assert asyncio.run(persist_entries(db, source, [same_title_a], settings))[1] == 1
+            assert asyncio.run(persist_entries(db, source, [same_title_b], settings))[1] == 1
+            assert db.execute(select(func.count()).select_from(Item)).scalar_one() == 3
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "dedupe-edge-cases.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_api_items_and_health_use_item_sources(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from fastapi.testclient import TestClient
+
+        from app.api import app
+        from app.db import SessionLocal, init_db
+        from app.models import Fulltext, Item, ItemSource, Source, SourceSubscription
+
+        init_db()
+        with SessionLocal() as db:
+            db.add_all([
+                Source(id="primary", name="Primary", content_type="blog", platform="origin"),
+                Source(id="secondary", name="Secondary", content_type="blog", platform="mirror"),
+                SourceSubscription(source_id="secondary", subscribed=True),
+            ])
+            db.flush()
+            item = Item(source_id="primary", canonical_url="https://example.com/shared", title="Shared API Item", url="https://example.com/shared", content_type="blog", platform="origin", source_name="Primary", raw_text="Full text")
+            db.add(item)
+            db.flush()
+            db.add_all([
+                ItemSource(item_id=item.id, source_id="primary", source_name="Primary", url="https://example.com/shared", canonical_url="https://example.com/shared"),
+                ItemSource(item_id=item.id, source_id="secondary", source_name="Secondary", url="https://mirror.example.com/shared", canonical_url="https://mirror.example.com/shared"),
+                Fulltext(item_id=item.id, extractor="feed_field", status="succeeded", text="Full text"),
+            ])
+            db.commit()
+
+        with TestClient(app) as client:
+            response = client.get("/api/items?q=Shared%20API%20Item")
+            assert response.status_code == 200, response.text
+            data = response.json()
+            assert data["total"] == 1
+            assert [source["source_id"] for source in data["items"][0]["sources"]] == ["primary", "secondary"]
+
+            response = client.get("/api/items?platform=mirror")
+            assert response.status_code == 200, response.text
+            assert response.json()["total"] == 1
+
+            health = client.get("/api/health")
+            assert health.status_code == 200, health.text
+            sources = {source["id"]: source for source in health.json()["sources"]}
+            assert sources["primary"]["item_count"] == 1
+            assert sources["secondary"]["item_count"] == 1
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "api-item-sources.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_cleanup_retired_source_keeps_items_with_remaining_sources(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from sqlalchemy import func, select
+
+        from app.db import SessionLocal, init_db
+        from app.models import Item, ItemSource, Source
+        from app.services import cleanup_retired_sources
+
+        init_db()
+        with SessionLocal() as db:
+            retired = Source(id="retired", name="Retired", content_type="blog", platform="old", is_builtin=True)
+            active = Source(id="active", name="Active", content_type="blog", platform="new")
+            db.add_all([retired, active])
+            db.flush()
+            item = Item(source_id="retired", canonical_url="https://example.com/shared", title="Shared retained item", url="https://example.com/shared", content_type="blog", platform="old", source_name="Retired")
+            db.add(item)
+            db.flush()
+            db.add_all([
+                ItemSource(item_id=item.id, source_id="retired", source_name="Retired", url="https://example.com/shared", canonical_url="https://example.com/shared"),
+                ItemSource(item_id=item.id, source_id="active", source_name="Active", url="https://active.example.com/shared", canonical_url="https://active.example.com/shared"),
+            ])
+            db.commit()
+
+            cleanup_retired_sources(db, {"retired"})
+            db.commit()
+
+            assert db.get(Source, "retired") is None
+            assert db.execute(select(func.count()).select_from(Item)).scalar_one() == 1
+            item = db.execute(select(Item)).scalar_one()
+            assert item.source_id == "active"
+            assert item.source_name == "Active"
+            assert db.execute(select(func.count()).select_from(ItemSource)).scalar_one() == 1
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "retired-source-shared-item.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_queue_auto_summaries_skips_items_with_active_summary_jobs(tmp_path: Path) -> None:
     result = run_python(
         """
@@ -482,7 +729,7 @@ def test_queue_auto_summaries_skips_items_with_active_summary_jobs(tmp_path: Pat
 
         from app.config import get_settings
         from app.db import SessionLocal, init_db
-        from app.models import Item, Job, JobStatus, Source, SourceSubscription, SummaryStatus
+        from app.models import Item, ItemSource, Job, JobStatus, Source, SourceSubscription, SummaryStatus
         from app.services import queue_auto_summaries
         from app.utils import dumps
 
@@ -517,6 +764,7 @@ def test_queue_auto_summaries_skips_items_with_active_summary_jobs(tmp_path: Pat
                 )
                 db.add(item)
                 db.flush()
+                db.add(ItemSource(item_id=item.id, source_id="target", source_name="Target", url=item.url, canonical_url=item.canonical_url))
                 active_items.append(item.id)
                 db.add(Job(type="summarize_item", status=status, payload=dumps({"item_id": item.id})))
             new_items = []
@@ -535,6 +783,7 @@ def test_queue_auto_summaries_skips_items_with_active_summary_jobs(tmp_path: Pat
                 )
                 db.add(item)
                 db.flush()
+                db.add(ItemSource(item_id=item.id, source_id="target", source_name="Target", url=item.url, canonical_url=item.canonical_url))
                 new_items.append(item.id)
             db.commit()
 
@@ -797,7 +1046,7 @@ def test_feed_defaults_to_subscribed_sources(tmp_path: Path) -> None:
     result = run_python(
         """
         from app.db import SessionLocal, init_db
-        from app.models import Item, Source, SourceSubscription
+        from app.models import Item, ItemSource, Source, SourceSubscription
         from app.services import query_items
 
         init_db()
@@ -808,12 +1057,19 @@ def test_feed_defaults_to_subscribed_sources(tmp_path: Path) -> None:
                 SourceSubscription(source_id="subscribed", subscribed=True),
             ])
             db.flush()
+            subscribed_item = Item(source_id="subscribed", canonical_url="https://example.com/sub", title="Subscribed item", url="https://example.com/sub", content_type="blog", platform="test", source_name="Subscribed")
+            available_item = Item(source_id="available", canonical_url="https://example.com/available", title="Available item", url="https://example.com/available", content_type="blog", platform="test", source_name="Available")
+            db.add_all([subscribed_item, available_item])
+            db.flush()
             db.add_all([
-                Item(source_id="subscribed", canonical_url="https://example.com/sub", title="Subscribed item", url="https://example.com/sub", content_type="blog", platform="test", source_name="Subscribed"),
-                Item(source_id="available", canonical_url="https://example.com/available", title="Available item", url="https://example.com/available", content_type="blog", platform="test", source_name="Available"),
+                ItemSource(item_id=subscribed_item.id, source_id="subscribed", source_name="Subscribed", url=subscribed_item.url, canonical_url=subscribed_item.canonical_url),
+                ItemSource(item_id=available_item.id, source_id="available", source_name="Available", url=available_item.url, canonical_url=available_item.canonical_url),
             ])
             db.commit()
             items, total = query_items(db)
+            assert total == 1
+            assert items[0].source_id == "subscribed"
+            items, total = query_items(db, since="today")
             assert total == 1
             assert items[0].source_id == "subscribed"
             items, total = query_items(db, include_unsubscribed=True)

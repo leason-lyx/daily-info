@@ -27,6 +27,7 @@ data/*.sqlite3
 data/*.sqlite-*
 data/*.sqlite3-*
 .superpowers/
+.codex
 .playwright-cli/
 web/node_modules/
 web/.next/
