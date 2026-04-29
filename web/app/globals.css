@@ -795,46 +795,42 @@ textarea {
 }
 
 .sourceDetails {
-  display: grid;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
 }
 
-.sourceDescriptor,
-.sourceFacts {
-  display: flex;
+.sourcePill {
+  display: inline-flex;
   align-items: center;
-  gap: 0;
-  min-width: 0;
-  color: var(--muted);
-  line-height: 1.35;
-  flex-wrap: wrap;
-}
-
-.sourceDescriptor {
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.sourceFacts {
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.sourceDescriptor span,
-.sourceFacts span {
+  max-width: 22ch;
+  min-height: 23px;
   overflow: hidden;
-  min-width: 0;
-  max-width: 32ch;
+  border: 1px solid #d9e2ec;
+  border-radius: 999px;
+  background: #f8fafc;
+  padding: 2px 8px;
+  color: #52657b;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.sourceDescriptor span + span::before,
-.sourceFacts span + span::before {
-  margin: 0 7px;
-  color: #a0adba;
-  content: "·";
+.sourcePill.strong {
+  border-color: #cfe7f7;
+  background: #edf7fd;
+  color: #245476;
+}
+
+.sourcePill.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  padding-inline: 2px;
 }
 
 .monoValue {
