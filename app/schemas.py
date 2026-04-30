@@ -57,6 +57,11 @@ class SummaryPolicyIn(BaseModel):
     window_days: int = Field(default=7, ge=1)
 
 
+class TaggingPolicyIn(BaseModel):
+    mode: Literal["feed", "llm", "default"] = "llm"
+    max_tags: int = Field(default=5, ge=1, le=12)
+
+
 class AuthPolicyIn(BaseModel):
     mode: str = "none"
     secret_ref: str = ""
@@ -80,6 +85,7 @@ class SourceDefinitionIn(BaseModel):
     fetch: FetchConfigIn
     fulltext: FulltextPolicyIn = Field(default_factory=FulltextPolicyIn)
     summary: SummaryPolicyIn | None = None
+    tagging: TaggingPolicyIn = Field(default_factory=TaggingPolicyIn)
     filters: ProcessingFiltersIn = Field(default_factory=ProcessingFiltersIn)
     auth: AuthPolicyIn = Field(default_factory=AuthPolicyIn)
     stability: str = "stable"
@@ -149,6 +155,7 @@ class SourceIn(BaseModel):
     default_tags: list[str] = Field(default_factory=list)
     attempts: list[SourceAttemptIn] = Field(default_factory=list)
     fulltext: dict[str, Any] = Field(default_factory=lambda: {"strategy": "feed_field"})
+    tagging: TaggingPolicyIn = Field(default_factory=TaggingPolicyIn)
     auth_mode: str = "none"
     stability_level: str = "stable"
 
@@ -176,6 +183,7 @@ class SourcePatch(BaseModel):
     default_tags: list[str] | None = None
     attempts: list[SourceAttemptIn] | None = None
     fulltext: dict[str, Any] | None = None
+    tagging: TaggingPolicyIn | None = None
     auth_mode: str | None = None
     stability_level: str | None = None
 
@@ -208,6 +216,7 @@ class PreviewEntry(BaseModel):
     published_at: datetime | None = None
     authors: list[str] = Field(default_factory=list)
     summary: str = ""
+    tags: list[str] = Field(default_factory=list)
     has_text: bool = False
 
 

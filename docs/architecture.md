@@ -6,8 +6,8 @@ Daily Info 采用简单的单体后端加后台进程架构，避免把个人自
 
 默认 Docker Compose 栈包含四个服务：
 
-- `web`：Next.js 前端，默认暴露 `http://localhost:3000`。
-- `api`：FastAPI 后端，默认暴露 `http://localhost:8000`。
+- `web`：Next.js 前端，默认只绑定 `http://127.0.0.1:3000`。
+- `api`：FastAPI 后端，默认只绑定 `http://127.0.0.1:8000`。
 - `worker`：后台 job runner，执行抓取、全文抽取和摘要任务。
 - `scheduler`：周期性扫描订阅源并投递 fetch jobs。
 
@@ -15,6 +15,8 @@ Daily Info 采用简单的单体后端加后台进程架构，避免把个人自
 
 - `rsshub`：通过 Compose profile 启动的自托管 RSSHub 实例。
 - `postgres`：可选数据库 profile；默认路径仍是 SQLite。
+
+需要远程访问时，推荐在宿主机上用 Tailscale Serve、反向代理或 SSH tunnel 转发 localhost 端口，而不是让容器直接监听所有网卡。
 
 ## 数据流
 
@@ -27,6 +29,7 @@ Source Catalog
   -> fetch_source job
   -> Adapter
   -> RawEntry
+  -> tag cleanup / optional LLM tagging
   -> Item / ItemSource
   -> Fulltext
   -> summarize_item job
@@ -40,6 +43,7 @@ Source Catalog
 - 启动时 API 会同步 catalog 到数据库。
 - 只有已订阅 source 会被 scheduler 抓取，并默认进入 feed。
 - Item 使用确定性 `dedupe_key` 做跨 source 去重；`item_sources` 是来源归属的事实表，source 过滤、订阅过滤、health 统计、source audit 和摘要队列都按它计算。
+- 每个 source 可以配置 `tagging` 策略：可信 feed 使用 entry category/tag，不可信 feed 可用 AI 生成主题标签，所有路径都会过滤明显的网页布局/CSS class 噪声。
 - item 入库不等待 AI 摘要完成。
 - 抓取、全文和摘要失败都应可观察，但不应阻断历史内容浏览。
 

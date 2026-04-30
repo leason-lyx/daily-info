@@ -241,6 +241,7 @@ async def source_preview(payload: PreviewRequest, db: Db):
             "published_at": entry.published_at,
             "authors": entry.authors,
             "summary": entry.summary,
+            "tags": entry.tags,
             "has_text": bool(entry.content or entry.summary),
         }
         for entry in result.entries[:5]

@@ -106,6 +106,68 @@ def test_fetch_feed_parses_arxiv_api_atom(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_fetch_feed_parses_entry_categories_as_tags(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        import httpx
+
+        from app.adapters import fetch_feed
+
+        atom = b'''<?xml version="1.0" encoding="UTF-8"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <id>https://example.com/posts/1</id>
+            <title>Useful Robotics Update</title>
+            <updated>2026-04-23T15:29:09Z</updated>
+            <link href="https://example.com/posts/1" rel="alternate" type="text/html"/>
+            <summary>Robotics systems are improving.</summary>
+            <category term="Robotics"/>
+            <category term="Machine Learning"/>
+          </entry>
+        </feed>'''
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def get(self, url, headers=None):
+                request = httpx.Request("GET", url)
+                return httpx.Response(200, content=atom, request=request)
+
+        with patch("app.adapters.httpx.AsyncClient", FakeAsyncClient):
+            result = asyncio.run(fetch_feed("https://example.com/feed.xml"))
+
+        assert result.entries[0].tags == ["Robotics", "Machine Learning"]
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "feed-tags.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_tag_sanitizer_filters_layout_class_noise() -> None:
+    result = run_python(
+        """
+        from app.tags import sanitize_tags
+
+        assert sanitize_tags(["px-0", "cols-12", "span-6", "start-4", "span-12", "mb-0"]) == []
+        assert sanitize_tags(["Artificial Intelligence", "AI", "Machine Learning", "AI"]) == ["artificial-intelligence", "ai", "machine-learning"]
+        print("ok")
+        """,
+        "sqlite:///:memory:",
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_settings_saves_multiple_llm_providers_without_exposing_keys(tmp_path: Path) -> None:
     result = run_python(
         """
@@ -320,6 +382,7 @@ def test_fetch_run_counts_only_new_summary_jobs_for_source(tmp_path: Path) -> No
                 enabled=True,
                 auto_summary_enabled=True,
                 fulltext=dumps({"strategy": "feed_field"}),
+                tagging=dumps({"mode": "default", "max_tags": 5}),
             )
             target = Source(
                 id="target",
@@ -329,6 +392,7 @@ def test_fetch_run_counts_only_new_summary_jobs_for_source(tmp_path: Path) -> No
                 enabled=True,
                 auto_summary_enabled=True,
                 fulltext=dumps({"strategy": "feed_field"}),
+                tagging=dumps({"mode": "default", "max_tags": 5}),
             )
             target.attempts = [SourceAttempt(kind="direct", adapter="manual", enabled=True)]
             db.add_all([other, target])
@@ -495,6 +559,252 @@ def test_persist_entries_deduplicates_tracking_urls_and_preserves_user_state(tmp
         print("ok")
         """,
         sqlite_url(tmp_path / "dedupe-url-state.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_persist_entries_uses_feed_tagging_mode_and_filters_noise(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+
+        from sqlalchemy import select
+
+        from app.adapters import RawEntryData
+        from app.config import get_settings
+        from app.db import SessionLocal, init_db
+        from app.models import Item, ItemSource, Source
+        from app.services import persist_entries
+        from app.utils import dumps, loads
+
+        init_db()
+        with SessionLocal() as db:
+            source = Source(
+                id="feed-source",
+                name="Feed Source",
+                content_type="blog",
+                platform="example",
+                default_tags=dumps(["media"]),
+                tagging=dumps({"mode": "feed", "max_tags": 5}),
+            )
+            db.add(source)
+            db.commit()
+            entry = RawEntryData(
+                title="Robotics Update",
+                url="https://example.com/robotics",
+                summary="Robotics systems are improving.",
+                content="Robotics systems are improving.",
+                tags=["px-0", "Robotics", "Machine Learning", "span-6"],
+            )
+            asyncio.run(persist_entries(db, source, [entry], get_settings()))
+            item = db.execute(select(Item)).scalar_one()
+            item_source = db.execute(select(ItemSource)).scalar_one()
+            assert loads(item.tags, []) == ["media", "robotics", "machine-learning"]
+            assert loads(item_source.tags, []) == ["media", "robotics", "machine-learning"]
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "feed-tagging-mode.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_persist_entries_default_tagging_mode_ignores_feed_tags(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+
+        from sqlalchemy import select
+
+        from app.adapters import RawEntryData
+        from app.config import get_settings
+        from app.db import SessionLocal, init_db
+        from app.models import Item, Source
+        from app.services import persist_entries
+        from app.utils import dumps, loads
+
+        init_db()
+        with SessionLocal() as db:
+            source = Source(
+                id="default-source",
+                name="Default Source",
+                content_type="blog",
+                platform="example",
+                default_tags=dumps(["media", "span-6"]),
+                tagging=dumps({"mode": "default", "max_tags": 5}),
+            )
+            db.add(source)
+            db.commit()
+            entry = RawEntryData(
+                title="Ignored Feed Tags",
+                url="https://example.com/default",
+                summary="Text.",
+                content="Text.",
+                tags=["Robotics", "Machine Learning"],
+            )
+            asyncio.run(persist_entries(db, source, [entry], get_settings()))
+            item = db.execute(select(Item)).scalar_one()
+            assert loads(item.tags, []) == ["media"]
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "default-tagging-mode.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_persist_entries_llm_tagging_uses_generated_tags_and_falls_back(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+
+        from sqlalchemy import select
+
+        from app.adapters import RawEntryData
+        from app.config import get_settings
+        from app.db import SessionLocal, init_db
+        from app.models import Item, LLMUsageEvent, Source
+        from app.services import llm_usage_stats, persist_entries
+        from app.utils import dumps, loads
+
+        init_db()
+        settings = get_settings().model_copy(update={
+            "llm_provider_type": "openai_compatible",
+            "llm_base_url": "https://llm.example.com/v1",
+            "llm_api_key": "secret",
+            "llm_model_name": "tagger",
+        })
+        with SessionLocal() as db:
+            source = Source(
+                id="llm-source",
+                name="LLM Source",
+                content_type="blog",
+                platform="example",
+                default_tags=dumps(["media"]),
+                tagging=dumps({"mode": "llm", "max_tags": 5}),
+            )
+            db.add(source)
+            db.commit()
+
+            calls = {"count": 0}
+
+            async def fake_generate(_item, _settings, _max_tags):
+                calls["count"] += 1
+                return {
+                    "tags": ["Artificial Intelligence", "span-6", "Robotics"],
+                    "usage": {"prompt_tokens": 11, "completion_tokens": 3, "total_tokens": 14, "reasoning_tokens": 0, "raw": {"total_tokens": 14}},
+                    "duration_ms": 25,
+                }
+
+            import app.services
+            app.services.generate_tags_openai_compatible = fake_generate
+            first = RawEntryData(
+                title="AI Robotics",
+                url="https://example.com/llm-ok",
+                summary="Robotics and AI.",
+                content="Robotics and AI.",
+                tags=["px-0", "feed-tag"],
+            )
+            asyncio.run(persist_entries(db, source, [first], settings))
+            item = db.execute(select(Item).where(Item.url == "https://example.com/llm-ok")).scalar_one()
+            assert loads(item.tags, []) == ["media", "artificial-intelligence", "robotics"]
+            assert calls["count"] == 1
+
+            async def failing_generate(_item, _settings, _max_tags):
+                calls["count"] += 1
+                raise RuntimeError("provider failed")
+
+            app.services.generate_tags_openai_compatible = failing_generate
+            asyncio.run(persist_entries(db, source, [first], settings))
+            item = db.execute(select(Item).where(Item.url == "https://example.com/llm-ok")).scalar_one()
+            assert loads(item.tags, []) == ["media", "artificial-intelligence", "robotics"]
+            assert calls["count"] == 1
+
+            second = RawEntryData(
+                title="Fallback Tags",
+                url="https://example.com/llm-fail",
+                summary="AI.",
+                content="AI.",
+                tags=["feed-tag"],
+            )
+            asyncio.run(persist_entries(db, source, [second], settings))
+            item = db.execute(select(Item).where(Item.url == "https://example.com/llm-fail")).scalar_one()
+            assert loads(item.tags, []) == ["media"]
+            events = db.execute(select(LLMUsageEvent).order_by(LLMUsageEvent.id)).scalars().all()
+            assert [event.status for event in events] == ["ready", "failed"]
+            usage = llm_usage_stats(db)
+            assert usage["all_time"]["requests"] == 2
+            assert usage["all_time"]["success"] == 1
+            assert usage["all_time"]["failed"] == 1
+            assert usage["all_time"]["total_tokens"] == 14
+            assert usage["last_error"] == "provider failed"
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "llm-tagging-mode.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_persist_entries_llm_tagging_caps_generation_per_fetch(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+
+        from sqlalchemy import select
+
+        from app.adapters import RawEntryData
+        from app.config import get_settings
+        from app.db import SessionLocal, init_db
+        from app.models import Item, LLMUsageEvent, Source
+        from app.services import LLM_TAG_MAX_PER_FETCH, persist_entries
+        from app.utils import dumps, loads
+
+        init_db()
+        settings = get_settings().model_copy(update={
+            "llm_provider_type": "openai_compatible",
+            "llm_base_url": "https://llm.example.com/v1",
+            "llm_api_key": "secret",
+            "llm_model_name": "tagger",
+        })
+        with SessionLocal() as db:
+            source = Source(
+                id="llm-cap-source",
+                name="LLM Cap Source",
+                content_type="blog",
+                platform="example",
+                default_tags=dumps(["media"]),
+                tagging=dumps({"mode": "llm", "max_tags": 5}),
+            )
+            db.add(source)
+            db.commit()
+
+            calls = {"count": 0}
+
+            async def fake_generate(item, _settings, _max_tags):
+                calls["count"] += 1
+                return {"tags": [f"generated-{calls['count']}"], "usage": {"total_tokens": 1}, "duration_ms": 1}
+
+            import app.services
+            app.services.generate_tags_openai_compatible = fake_generate
+            entries = [
+                RawEntryData(
+                    title=f"Item {idx}",
+                    url=f"https://example.com/item-{idx}",
+                    summary="AI.",
+                    content="AI.",
+                    tags=["feed-tag"],
+                )
+                for idx in range(LLM_TAG_MAX_PER_FETCH + 3)
+            ]
+            asyncio.run(persist_entries(db, source, entries, settings))
+
+            assert calls["count"] == LLM_TAG_MAX_PER_FETCH
+            assert db.execute(select(LLMUsageEvent)).scalars().all()
+            first = db.execute(select(Item).where(Item.url == "https://example.com/item-0")).scalar_one()
+            capped = db.execute(select(Item).where(Item.url == f"https://example.com/item-{LLM_TAG_MAX_PER_FETCH}")).scalar_one()
+            assert loads(first.tags, []) == ["media", "generated-1"]
+            assert loads(capped.tags, []) == ["media"]
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "llm-tagging-cap.db"),
     )
     assert result.stdout.strip() == "ok"
 
@@ -855,6 +1165,7 @@ def test_builtin_sources_include_arxiv_api_categories(tmp_path: Path) -> None:
             assert source.content_type == "paper"
             assert source.homepage_url == "https://arxiv.org/list/cs.SE/recent"
             assert loads(source.default_tags, []) == ["paper", "software-engineering"]
+            assert loads(source.tagging, {}) == {"mode": "feed", "max_tags": 5}
             assert source.attempts[0].url == ARXIV_CS_SE_API_URL
             assert "rss.arxiv.org/rss/cs.SE" not in source.attempts[0].url
             source = db.get(Source, "arxiv-cs-cl")
@@ -862,12 +1173,14 @@ def test_builtin_sources_include_arxiv_api_categories(tmp_path: Path) -> None:
             assert source.content_type == "paper"
             assert source.homepage_url == "https://arxiv.org/list/cs.CL/recent"
             assert loads(source.default_tags, []) == ["paper", "nlp"]
+            assert loads(source.tagging, {}) == {"mode": "feed", "max_tags": 5}
             assert source.attempts[0].url == ARXIV_CS_CL_API_URL
             assert "rss.arxiv.org/rss/cs.CL" not in source.attempts[0].url
             source = db.get(Source, "arxiv-cs-ai")
             assert source.name == "arXiv cs.AI"
             assert source.content_type == "paper"
             assert loads(source.default_tags, []) == ["paper", "ai"]
+            assert loads(source.tagging, {}) == {"mode": "feed", "max_tags": 5}
             assert source.attempts[0].url == ARXIV_CS_AI_API_URL
             assert "rss.arxiv.org/rss/cs.AI" not in source.attempts[0].url
         print("ok")
@@ -942,6 +1255,8 @@ def test_catalog_sources_are_opt_in_subscriptions(tmp_path: Path) -> None:
             subscribe_source(db, "juya-ai-daily")
             definitions = {definition.id: definition for definition in list_source_definitions(db)}
             assert definitions["juya-ai-daily"].subscribed is True
+            assert definitions["arxiv-cs-ai"].tagging.mode == "feed"
+            assert definitions["arxiv-cs-ai"].tagging.max_tags == 5
             assert schedule_due_sources(db) == 1
             assert db.execute(select(func.count()).select_from(Job).where(Job.type == "fetch_source")).scalar_one() == 1
         print("ok")

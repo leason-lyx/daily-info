@@ -11,6 +11,7 @@ import httpx
 
 from app.config import Settings
 from app.models import Item
+from app.tags import sanitize_tags
 
 
 TEMPLATES: dict[str, list[str]] = {
@@ -41,6 +42,35 @@ def build_prompt(item: Item) -> str:
         f"Feed summary for context only: {item.summary[:1200]}\n"
         f"Original text to summarize:\n{raw_text[:12000]}"
     )
+
+
+def build_tag_prompt(item: Item, max_tags: int) -> str:
+    raw_text = item.raw_text.strip() or item.summary.strip()
+    return (
+        "Generate topical tags for a research intelligence feed. "
+        "Return strict JSON only with this shape: {\"tags\":[\"tag\"]}. "
+        f"Return at most {max_tags} short English slug-style tags. "
+        "Use domain/topic tags only; never return website layout, CSS, section, or navigation labels.\n\n"
+        f"Title: {item.title}\n"
+        f"Source: {item.source_name}\n"
+        f"Type: {item.content_type}\n"
+        f"Feed summary: {item.summary[:1200]}\n"
+        f"Original text:\n{raw_text[:8000]}"
+    )
+
+
+def validate_tags(data: Any, max_tags: int) -> list[str]:
+    if not isinstance(data, dict):
+        raise ValueError("tag output is not a JSON object")
+    raw_tags = data.get("tags", [])
+    if isinstance(raw_tags, str):
+        raw_tags = [raw_tags]
+    if not isinstance(raw_tags, list):
+        raise ValueError("tag output tags field is not a JSON array")
+    tags = sanitize_tags(raw_tags, max_tags=max_tags)
+    if not tags:
+        raise ValueError("tag output did not contain usable tags")
+    return tags
 
 
 def validate_summary(data: Any, content_type: str) -> dict[str, Any]:
@@ -141,6 +171,34 @@ async def summarize_openai_compatible(item: Item, settings: Settings) -> dict[st
     }
 
 
+async def generate_tags_openai_compatible(item: Item, settings: Settings, max_tags: int) -> dict[str, Any]:
+    if not (settings.llm_base_url and settings.llm_api_key and settings.llm_model_name):
+        raise RuntimeError("OpenAI-compatible provider is not fully configured")
+    url = settings.llm_base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": settings.llm_model_name,
+        "temperature": settings.llm_temperature,
+        "messages": [
+            {"role": "system", "content": "Return strict JSON only. Generate short English topical tags."},
+            {"role": "user", "content": build_tag_prompt(item, max_tags)},
+        ],
+        "response_format": {"type": "json_object"},
+    }
+    started = perf_counter()
+    async with httpx.AsyncClient(timeout=settings.llm_timeout) as client:
+        response = await client.post(url, json=payload, headers={"Authorization": f"Bearer {settings.llm_api_key}"})
+    duration_ms = int((perf_counter() - started) * 1000)
+    if response.status_code >= 400:
+        raise RuntimeError(f"LLM request failed with {response.status_code}: {response.text[:500]}")
+    response_data = response.json()
+    content = response_data["choices"][0]["message"]["content"]
+    return {
+        "tags": validate_tags(load_json_object(content), max_tags),
+        "usage": normalize_usage(response_data.get("usage")),
+        "duration_ms": duration_ms,
+    }
+
+
 async def summarize_codex_cli(item: Item, settings: Settings) -> dict[str, Any]:
     if not shutil.which(settings.codex_cli_path):
         raise RuntimeError(f"Codex CLI not found: {settings.codex_cli_path}")
@@ -175,6 +233,47 @@ async def summarize_codex_cli(item: Item, settings: Settings) -> dict[str, Any]:
             content = result.stdout.strip()
         return {
             "data": validate_summary(load_json_object(content), item.content_type),
+            "usage": normalize_usage({}),
+            "duration_ms": int((perf_counter() - started) * 1000),
+        }
+    finally:
+        output_path.unlink(missing_ok=True)
+
+
+async def generate_tags_codex_cli(item: Item, settings: Settings, max_tags: int) -> dict[str, Any]:
+    if not shutil.which(settings.codex_cli_path):
+        raise RuntimeError(f"Codex CLI not found: {settings.codex_cli_path}")
+    with tempfile.NamedTemporaryFile(prefix="daily-info-codex-tags-", suffix=".json", delete=False) as output_file:
+        output_path = Path(output_file.name)
+    cmd = [
+        settings.codex_cli_path,
+        "exec",
+        "--ephemeral",
+        "--color",
+        "never",
+        "-o",
+        str(output_path),
+    ]
+    if settings.codex_cli_model:
+        cmd.extend(["--model", settings.codex_cli_model])
+    cmd.append("Return only strict JSON. Generate topical English tags for the <stdin> item using exactly the requested shape.")
+    started = perf_counter()
+    try:
+        result = subprocess.run(
+            cmd,
+            input=build_tag_prompt(item, max_tags),
+            capture_output=True,
+            text=True,
+            timeout=settings.llm_timeout,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Codex CLI failed")
+        content = output_path.read_text(encoding="utf-8").strip()
+        if not content:
+            content = result.stdout.strip()
+        return {
+            "tags": validate_tags(load_json_object(content), max_tags),
             "usage": normalize_usage({}),
             "duration_ms": int((perf_counter() - started) * 1000),
         }

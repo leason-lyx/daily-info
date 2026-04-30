@@ -66,6 +66,8 @@ curl -fsS http://127.0.0.1:8000/api/health
 curl -fsS http://127.0.0.1:8000/api/source-definitions
 ```
 
+Compose 默认只把 Web/API 绑定到 `127.0.0.1`。如果需要通过 Tailscale 访问，使用 Tailscale Serve 转发 `443 -> 127.0.0.1:3000` 和 `8000 -> 127.0.0.1:8000`，不要让容器直接抢占 tailnet 地址上的 `8000`。
+
 涉及 UI 或功能行为的改动，还需要在浏览器中验证受影响页面。
 
 ## Source Audit

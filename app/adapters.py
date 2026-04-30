@@ -23,6 +23,7 @@ class RawEntryData:
     authors: list[str] = field(default_factory=list)
     summary: str = ""
     content: str = ""
+    tags: list[str] = field(default_factory=list)
     raw_payload: dict[str, Any] = field(default_factory=dict)
 
 
@@ -60,6 +61,30 @@ def _authors(entry: Any) -> list[str]:
     return []
 
 
+def _entry_tags(entry: Any) -> list[str]:
+    values: list[str] = []
+    for tag in entry.get("tags") or []:
+        if isinstance(tag, dict):
+            values.extend(str(tag.get(key) or "") for key in ["term", "label"] if tag.get(key))
+        elif tag:
+            values.append(str(tag))
+    for key in ["category", "categories"]:
+        raw_value = entry.get(key)
+        if isinstance(raw_value, list):
+            values.extend(str(value) for value in raw_value if value)
+        elif raw_value:
+            values.append(str(raw_value))
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        value = value.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
+
+
 async def fetch_feed(url: str, timeout: int = 20) -> AdapterResult:
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
         response = await client.get(url, headers={"User-Agent": "daily-info/0.1"})
@@ -80,6 +105,7 @@ async def fetch_feed(url: str, timeout: int = 20) -> AdapterResult:
                 authors=_authors(entry),
                 summary=str(entry.get("summary") or ""),
                 content=_entry_content(entry),
+                tags=_entry_tags(entry),
                 raw_payload=dict(entry),
             )
         )

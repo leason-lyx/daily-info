@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models import Source, SourceAttempt
 from app.schemas import FetchAttemptIn, SourceDefinitionIn
+from app.tags import DEFAULT_TAGGING, normalize_tagging_config
 from app.utils import dumps, loads
 
 
@@ -82,6 +83,7 @@ def apply_definition(source: Source, definition: SourceDefinitionIn, catalog_fil
     source.include_keywords = dumps(filters.include_keywords)
     source.exclude_keywords = dumps(filters.exclude_keywords)
     source.default_tags = dumps(definition.tags)
+    source.tagging = dumps(definition.tagging.model_dump(mode="json"))
     source.fetch = dumps(definition.fetch.model_dump(mode="json"))
     source.fulltext = dumps(definition.fulltext.model_dump(mode="json"))
     source.summary = dumps(summary.model_dump(mode="json") if summary else {})
@@ -123,6 +125,7 @@ def definition_from_source(source: Source) -> SourceDefinitionIn:
         homepage=source.homepage_url,
         language=source.language_hint,
         tags=loads(source.default_tags, []),
+        tagging=normalize_tagging_config(loads(getattr(source, "tagging", ""), DEFAULT_TAGGING)),
         group=source.group,
         priority=source.priority,
         fetch={

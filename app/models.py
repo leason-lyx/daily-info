@@ -55,6 +55,7 @@ class Source(Base):
     exclude_keywords: Mapped[str] = mapped_column(Text, default="[]")
     default_tags: Mapped[str] = mapped_column(Text, default="[]")
     fulltext: Mapped[str] = mapped_column(Text, default='{"strategy":"feed_field"}')
+    tagging: Mapped[str] = mapped_column(Text, default='{"mode":"llm","max_tags":5}')
     fetch: Mapped[str] = mapped_column(Text, default="{}")
     summary: Mapped[str] = mapped_column(Text, default="{}")
     auth: Mapped[str] = mapped_column(Text, default='{"mode":"none"}')
@@ -245,6 +246,25 @@ class Summary(Base):
     content_hash: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(40), default=SummaryStatus.pending.value)
     data: Mapped[str] = mapped_column(Text, default="{}")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    reasoning_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    usage_json: Mapped[str] = mapped_column(Text, default="{}")
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class LLMUsageEvent(Base):
+    __tablename__ = "llm_usage_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    purpose: Mapped[str] = mapped_column(String(80), default="")
+    item_id: Mapped[str | None] = mapped_column(String(36), index=True)
+    provider: Mapped[str] = mapped_column(String(80), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    status: Mapped[str] = mapped_column(String(40), default=SummaryStatus.pending.value)
     error_message: Mapped[str] = mapped_column(Text, default="")
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)

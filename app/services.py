@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -9,11 +10,23 @@ from sqlalchemy.orm import Session, selectinload
 from app.catalog import DEFAULT_SOURCE_PACK_PATH
 from app.config import Settings, get_settings
 from app.fulltext import extract_generic_article, strip_html
-from app.models import Fulltext, Item, ItemSource, Job, JobStatus, LLMProvider, RawEntry, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
+from app.models import Fulltext, Item, ItemSource, Job, JobStatus, LLMProvider, LLMUsageEvent, RawEntry, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
 from app.schemas import ItemOut, SourceAttemptIn, SourceAttemptOut, SourceDefinitionIn, SourceDefinitionOut, SourceOut, SourcePatch, SourceRuntimeOut, SourceIn
 from app.source_catalog import definition_from_source, sync_source_catalog, upsert_source_definition
 from app.subscriptions import subscribed_source_ids
+from app.summary import generate_tags_codex_cli, generate_tags_openai_compatible
+from app.tags import merge_tags, normalize_tagging_config, sanitize_tags
 from app.utils import canonicalize_url, dedupe_key_from_parts, dumps, extract_entities, loads, stable_hash, text_matches
+
+
+LLM_TAG_MAX_PER_FETCH = 20
+
+
+@dataclass(frozen=True)
+class TaggingResult:
+    tags: list[str]
+    generated: bool = False
+    attempted: bool = False
 
 
 def load_source_pack(path: str | Path) -> list[SourceIn]:
@@ -66,6 +79,7 @@ def source_to_out(source: Source, latest_run: SourceRun | None = None) -> Source
             for attempt in source.attempts
         ],
         fulltext=loads(source.fulltext, {"strategy": "feed_field"}),
+        tagging=normalize_tagging_config(loads(source.tagging, {})),
         auth_mode=source.auth_mode,
         stability_level=source.stability_level,
         latest_run=run_to_dict(latest_run) if latest_run else None,
@@ -477,6 +491,7 @@ def create_source_model(data: SourceIn, is_builtin: bool = False) -> Source:
         exclude_keywords=dumps(data.exclude_keywords),
         default_tags=dumps(data.default_tags),
         fulltext=dumps(data.fulltext),
+        tagging=dumps(data.tagging.model_dump(mode="json")),
         auth_mode=data.auth_mode,
         stability_level=data.stability_level,
     )
@@ -515,9 +530,11 @@ def patch_source(db: Session, source: Source, patch: SourcePatch) -> Source:
         value = getattr(patch, field)
         if value is not None:
             setattr(source, field, value)
-    for field in ["include_keywords", "exclude_keywords", "default_tags", "fulltext"]:
+    for field in ["include_keywords", "exclude_keywords", "default_tags", "fulltext", "tagging"]:
         value = getattr(patch, field)
         if value is not None:
+            if hasattr(value, "model_dump"):
+                value = value.model_dump(mode="json")
             setattr(source, field, dumps(value))
     if patch.attempts is not None:
         source.attempts.clear()
@@ -604,50 +621,87 @@ def _item_source_assoc_subquery():
 
 
 def _summary_usage_bucket(db: Session, cutoff: datetime | None = None, model: str | None = None) -> dict[str, Any]:
-    filters = [Summary.provider == "openai_compatible"]
+    summary_filters = [Summary.provider == "openai_compatible"]
+    event_filters = [LLMUsageEvent.provider == "openai_compatible"]
     if cutoff is not None:
-        filters.append(Summary.created_at >= cutoff)
+        summary_filters.append(Summary.created_at >= cutoff)
+        event_filters.append(LLMUsageEvent.created_at >= cutoff)
     if model is not None:
-        filters.append(Summary.model == model)
-    status_rows = db.execute(select(Summary.status, func.count(Summary.id)).where(*filters).group_by(Summary.status)).all()
-    status_counts = {str(status): int(count or 0) for status, count in status_rows}
-    token_row = db.execute(
+        summary_filters.append(Summary.model == model)
+        event_filters.append(LLMUsageEvent.model == model)
+    summary_status_rows = db.execute(select(Summary.status, func.count(Summary.id)).where(*summary_filters).group_by(Summary.status)).all()
+    event_status_rows = db.execute(
+        select(LLMUsageEvent.status, func.count(LLMUsageEvent.id)).where(*event_filters).group_by(LLMUsageEvent.status)
+    ).all()
+    status_counts: dict[str, int] = {}
+    for status, count in [*summary_status_rows, *event_status_rows]:
+        key = str(status)
+        status_counts[key] = status_counts.get(key, 0) + int(count or 0)
+    summary_token_row = db.execute(
         select(
             func.coalesce(func.sum(Summary.prompt_tokens), 0),
             func.coalesce(func.sum(Summary.completion_tokens), 0),
             func.coalesce(func.sum(Summary.total_tokens), 0),
             func.coalesce(func.sum(Summary.reasoning_tokens), 0),
             func.coalesce(func.sum(Summary.duration_ms), 0),
-        ).where(*filters)
+        ).where(*summary_filters)
+    ).one()
+    event_token_row = db.execute(
+        select(
+            func.coalesce(func.sum(LLMUsageEvent.prompt_tokens), 0),
+            func.coalesce(func.sum(LLMUsageEvent.completion_tokens), 0),
+            func.coalesce(func.sum(LLMUsageEvent.total_tokens), 0),
+            func.coalesce(func.sum(LLMUsageEvent.reasoning_tokens), 0),
+            func.coalesce(func.sum(LLMUsageEvent.duration_ms), 0),
+        ).where(*event_filters)
     ).one()
     requests = sum(status_counts.values())
     return {
         "requests": requests,
         "success": status_counts.get(SummaryStatus.ready.value, 0),
         "failed": status_counts.get(SummaryStatus.failed.value, 0),
-        "prompt_tokens": int(token_row[0] or 0),
-        "completion_tokens": int(token_row[1] or 0),
-        "total_tokens": int(token_row[2] or 0),
-        "reasoning_tokens": int(token_row[3] or 0),
-        "duration_ms": int(token_row[4] or 0),
+        "prompt_tokens": int(summary_token_row[0] or 0) + int(event_token_row[0] or 0),
+        "completion_tokens": int(summary_token_row[1] or 0) + int(event_token_row[1] or 0),
+        "total_tokens": int(summary_token_row[2] or 0) + int(event_token_row[2] or 0),
+        "reasoning_tokens": int(summary_token_row[3] or 0) + int(event_token_row[3] or 0),
+        "duration_ms": int(summary_token_row[4] or 0) + int(event_token_row[4] or 0),
     }
 
 
 def llm_usage_stats(db: Session) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
-    last_used_at = db.execute(select(func.max(Summary.created_at)).where(Summary.provider == "openai_compatible")).scalar_one()
-    last_error = db.execute(
+    last_summary_used_at = db.execute(select(func.max(Summary.created_at)).where(Summary.provider == "openai_compatible")).scalar_one()
+    last_event_used_at = db.execute(
+        select(func.max(LLMUsageEvent.created_at)).where(LLMUsageEvent.provider == "openai_compatible")
+    ).scalar_one()
+    last_used_candidates = [value for value in [last_summary_used_at, last_event_used_at] if value is not None]
+    last_summary_error = db.execute(
         select(Summary)
         .where(Summary.provider == "openai_compatible", Summary.error_message != "")
-        .order_by(Summary.id.desc())
+        .order_by(Summary.created_at.desc(), Summary.id.desc())
         .limit(1)
     ).scalar_one_or_none()
-    model_rows = db.execute(
+    last_event_error = db.execute(
+        select(LLMUsageEvent)
+        .where(LLMUsageEvent.provider == "openai_compatible", LLMUsageEvent.error_message != "")
+        .order_by(LLMUsageEvent.created_at.desc(), LLMUsageEvent.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    last_errors = [error for error in [last_summary_error, last_event_error] if error is not None]
+    last_error = max(last_errors, key=lambda row: row.created_at) if last_errors else None
+    summary_model_rows = db.execute(
         select(Summary.model)
         .where(Summary.provider == "openai_compatible")
         .group_by(Summary.model)
         .order_by(Summary.model)
     ).all()
+    event_model_rows = db.execute(
+        select(LLMUsageEvent.model)
+        .where(LLMUsageEvent.provider == "openai_compatible")
+        .group_by(LLMUsageEvent.model)
+        .order_by(LLMUsageEvent.model)
+    ).all()
+    models = sorted({model or "" for (model,) in [*summary_model_rows, *event_model_rows]})
     return {
         "provider": "openai_compatible",
         "all_time": _summary_usage_bucket(db),
@@ -655,9 +709,9 @@ def llm_usage_stats(db: Session) -> dict[str, Any]:
         "recent_7d": _summary_usage_bucket(db, now - timedelta(days=7)),
         "by_model": [
             {"model": model or "unknown", **_summary_usage_bucket(db, model=model)}
-            for (model,) in model_rows
+            for model in models
         ],
-        "last_used_at": last_used_at,
+        "last_used_at": max(last_used_candidates) if last_used_candidates else None,
         "last_error_at": last_error.created_at if last_error else None,
         "last_error": last_error.error_message if last_error else "",
     }
@@ -964,7 +1018,8 @@ def _item_has_source(source_ids: list[str]) -> Any:
 async def persist_entries(db: Session, source: Source, entries: list[Any], settings: Settings) -> tuple[int, int, int]:
     include = loads(source.include_keywords, [])
     exclude = loads(source.exclude_keywords, [])
-    default_tags = loads(source.default_tags, [])
+    default_tags = sanitize_tags(loads(source.default_tags, []))
+    tagging = normalize_tagging_config(loads(source.tagging, {}))
     fulltext_config = loads(source.fulltext, {"strategy": "feed_field"})
     raw_count = 0
     item_count = 0
@@ -979,6 +1034,7 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
         or 0
     )
     min_feed_fulltext_chars = int(fulltext_config.get("min_feed_chars", fulltext_config.get("min_feed_fulltext_chars", 1200)) or 1200)
+    llm_tag_attempts = 0
     for entry in entries:
         text_for_filter = f"{entry.title}\n{entry.summary}\n{entry.content}"
         if not text_matches(text_for_filter, include, exclude):
@@ -1005,6 +1061,7 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
         item = db.execute(select(Item).where(Item.dedupe_key == dedupe_key)).scalar_one_or_none()
         entry_summary = strip_html(entry.summary)
         raw_text = strip_html(entry.content or entry.summary)
+        provisional_tags = _tags_from_available_values(default_tags, getattr(entry, "tags", []), tagging, [])
         if not item:
             item = Item(
                 source_id=source.id,
@@ -1020,7 +1077,7 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
                 published_at=entry.published_at,
                 summary=entry_summary,
                 raw_text=raw_text,
-                tags=dumps(default_tags),
+                tags=dumps(provisional_tags),
                 entities=dumps(extract_entities(f"{entry.title}\n{entry.summary}")),
                 summary_status=SummaryStatus.not_configured.value if not settings.llm_configured else SummaryStatus.skipped.value,
             )
@@ -1033,13 +1090,15 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
             item.raw_text = _prefer_text(item.raw_text, raw_text)
             item.published_at = item.published_at or entry.published_at
             item.authors = dumps(_merge_list_values(loads(item.authors, []), entry.authors))
-            item.tags = dumps(_merge_list_values(loads(item.tags, []), default_tags))
+            item.tags = dumps(_merge_list_values(loads(item.tags, []), provisional_tags))
             item.entities = dumps(_merge_list_values(loads(item.entities, []), extract_entities(f"{entry.title}\n{entry.summary}")))
             if not item.url and entry.url:
                 item.url = entry.url
             if not item.canonical_url and item_canonical:
                 item.canonical_url = item_canonical
-        upsert_item_source(db, item, source, entry.url, item_canonical, default_tags)
+        existing_source_tags = _existing_item_source_tags(db, item, source)
+        item_source = upsert_item_source(db, item, source, entry.url, item_canonical, provisional_tags)
+        db.flush()
         should_fetch_detail = mode == "detail_only" or (
             mode == "feed_then_detail"
             and item.url
@@ -1079,10 +1138,189 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
             else:
                 db.add(Fulltext(item_id=item.id, extractor="feed_field", status="succeeded", text=raw_text))
                 fulltext_success += 1
+        allow_llm_tagging = _should_attempt_llm_tagging(tagging, settings, existing_source_tags, default_tags, llm_tag_attempts)
+        final_tag_result = await _tags_for_entry(
+            db,
+            source,
+            item,
+            entry,
+            settings,
+            default_tags,
+            tagging,
+            allow_llm=allow_llm_tagging,
+        )
+        if final_tag_result.attempted:
+            llm_tag_attempts += 1
+        item_source = db.get(ItemSource, item_source.id) if item_source.id else item_source
+        if item_source:
+            item_source.tags = dumps(
+                _tags_to_store_for_item_source(existing_source_tags, default_tags, tagging, final_tag_result)
+            )
+        db.flush()
+        item.tags = dumps(_merged_item_source_tags(db, item.id) if item.id else final_tag_result.tags)
         if _prepare_auto_summary_item(db, source, item, settings):
             queue_job(db, "summarize_item", {"item_id": item.id})
     db.commit()
     return raw_count, item_count, fulltext_success
+
+
+def _tags_from_available_values(default_tags: list[str], entry_tags: list[str], tagging: dict[str, Any], generated_tags: list[str]) -> list[str]:
+    mode = str(tagging.get("mode") or "llm")
+    max_tags = int(tagging.get("max_tags") or 5)
+    if mode == "feed":
+        return merge_tags(default_tags, entry_tags, max_tags=max_tags)
+    if mode == "default":
+        return sanitize_tags(default_tags, max_tags=max_tags)
+    return merge_tags(default_tags, generated_tags, max_tags=max_tags)
+
+
+def _existing_item_source_tags(db: Session, item: Item, source: Source) -> list[str]:
+    if not item.id:
+        return []
+    raw_tags = db.execute(
+        select(ItemSource.tags).where(ItemSource.item_id == item.id, ItemSource.source_id == source.id)
+    ).scalar_one_or_none()
+    return sanitize_tags(loads(raw_tags, []) if raw_tags else [])
+
+
+def _has_non_default_tags(tags: list[str], default_tags: list[str]) -> bool:
+    default_set = set(sanitize_tags(default_tags))
+    return any(tag not in default_set for tag in sanitize_tags(tags))
+
+
+def _should_attempt_llm_tagging(
+    tagging: dict[str, Any],
+    settings: Settings,
+    existing_source_tags: list[str],
+    default_tags: list[str],
+    llm_tag_attempts: int,
+) -> bool:
+    if str(tagging.get("mode") or "llm") != "llm":
+        return False
+    if not settings.llm_configured:
+        return False
+    if llm_tag_attempts >= LLM_TAG_MAX_PER_FETCH:
+        return False
+    return not _has_non_default_tags(existing_source_tags, default_tags)
+
+
+def _tags_to_store_for_item_source(
+    existing_source_tags: list[str],
+    default_tags: list[str],
+    tagging: dict[str, Any],
+    result: TaggingResult,
+) -> list[str]:
+    max_tags = int(tagging.get("max_tags") or 5)
+    mode = str(tagging.get("mode") or "llm")
+    if mode != "llm" or result.generated or not _has_non_default_tags(existing_source_tags, default_tags):
+        return result.tags
+    return merge_tags(default_tags, existing_source_tags, max_tags=max_tags)
+
+
+async def _tags_for_entry(
+    db: Session,
+    source: Source,
+    item: Item,
+    entry: Any,
+    settings: Settings,
+    default_tags: list[str],
+    tagging: dict[str, Any],
+    *,
+    allow_llm: bool,
+) -> TaggingResult:
+    mode = str(tagging.get("mode") or "llm")
+    if mode != "llm":
+        return TaggingResult(_tags_from_available_values(default_tags, getattr(entry, "tags", []), tagging, []), generated=True)
+    generated_tags: list[str] = []
+    attempted = False
+    if allow_llm:
+        max_tags = int(tagging.get("max_tags") or 5)
+        generated_tags = await _generate_item_tags(db, item, settings, max_tags)
+        attempted = True
+    return TaggingResult(
+        _tags_from_available_values(default_tags, [], tagging, generated_tags),
+        generated=bool(generated_tags),
+        attempted=attempted,
+    )
+
+
+async def _generate_item_tags(db: Session, item: Item, settings: Settings, max_tags: int) -> list[str]:
+    try:
+        if settings.llm_provider_type == "openai_compatible":
+            providers = openai_summary_provider_chain(db, settings)
+            if not providers and settings.llm_configured:
+                providers = [(None, settings)]
+            for provider, provider_settings in providers:
+                try:
+                    result = await generate_tags_openai_compatible(item, provider_settings, max_tags)
+                    _record_llm_usage_event(db, item, "tag_generation", "openai_compatible", provider_settings.llm_model_name or "", SummaryStatus.ready.value, result)
+                    if provider:
+                        provider.last_error = ""
+                    return sanitize_tags(result.get("tags", []), max_tags=max_tags)
+                except Exception as exc:  # noqa: BLE001
+                    _record_llm_usage_event(
+                        db,
+                        item,
+                        "tag_generation",
+                        "openai_compatible",
+                        provider_settings.llm_model_name or "",
+                        SummaryStatus.failed.value,
+                        {},
+                        error_message=str(exc),
+                    )
+                    if provider:
+                        provider.last_error = str(exc)[-1000:]
+                        db.flush()
+            return []
+        if settings.llm_provider_type == "codex_cli":
+            try:
+                result = await generate_tags_codex_cli(item, settings, max_tags)
+                _record_llm_usage_event(db, item, "tag_generation", "codex_cli", settings.codex_cli_model or "", SummaryStatus.ready.value, result)
+                return sanitize_tags(result.get("tags", []), max_tags=max_tags)
+            except Exception as exc:  # noqa: BLE001
+                _record_llm_usage_event(
+                    db,
+                    item,
+                    "tag_generation",
+                    "codex_cli",
+                    settings.codex_cli_model or "",
+                    SummaryStatus.failed.value,
+                    {},
+                    error_message=str(exc),
+                )
+    except Exception:  # noqa: BLE001
+        return []
+    return []
+
+
+def _record_llm_usage_event(
+    db: Session,
+    item: Item,
+    purpose: str,
+    provider: str,
+    model: str,
+    status: str,
+    result: dict[str, Any],
+    error_message: str = "",
+) -> None:
+    usage = result.get("usage", {}) if isinstance(result, dict) else {}
+    raw_usage = usage.get("raw", {}) if isinstance(usage, dict) else {}
+    event = LLMUsageEvent(
+        purpose=purpose,
+        item_id=item.id,
+        provider=provider,
+        model=model,
+        status=status,
+        error_message=error_message[-1000:] if error_message else "",
+        prompt_tokens=int(usage.get("prompt_tokens", 0) or 0) if isinstance(usage, dict) else 0,
+        completion_tokens=int(usage.get("completion_tokens", 0) or 0) if isinstance(usage, dict) else 0,
+        total_tokens=int(usage.get("total_tokens", 0) or 0) if isinstance(usage, dict) else 0,
+        reasoning_tokens=int(usage.get("reasoning_tokens", 0) or 0) if isinstance(usage, dict) else 0,
+        usage_json=dumps(raw_usage),
+        duration_ms=int(result.get("duration_ms", 0) or 0) if isinstance(result, dict) else 0,
+    )
+    db.add(event)
+    db.flush()
 
 
 def dedupe_key_for_entry(source: Source, entry: Any, canonical_url: str) -> str:
