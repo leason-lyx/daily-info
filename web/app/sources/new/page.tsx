@@ -64,6 +64,7 @@ export default function NewSourcePage() {
       },
       fulltext: { mode: contentType === "blog" ? "detail_only" : "feed_only", max_detail_pages_per_run: 20 },
       summary: { auto: contentType !== "paper", window_days: 7 },
+      tagging: { mode: "llm", max_tags: 5 },
       filters: { include_keywords: [], exclude_keywords: [] },
       auth: { mode: "none" },
       stability: "user",

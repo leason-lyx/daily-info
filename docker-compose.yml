@@ -6,7 +6,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL:-sqlite:////data/daily-info.db}
+      API_BASE_URL: http://127.0.0.1:8000
     network_mode: host
+    command: ["uvicorn", "app.api:app", "--host", "127.0.0.1", "--port", "8000"]
     volumes:
       - daily_info_data:/data
     healthcheck:
@@ -21,6 +23,8 @@ services:
       context: .
       dockerfile: Dockerfile.api
     env_file: .env
+    environment:
+      API_BASE_URL: http://127.0.0.1:8000
     network_mode: host
     command: ["python", "-m", "app.worker"]
     volumes:
@@ -34,6 +38,8 @@ services:
       context: .
       dockerfile: Dockerfile.api
     env_file: .env
+    environment:
+      API_BASE_URL: http://127.0.0.1:8000
     network_mode: host
     command: ["python", "-m", "app.scheduler"]
     volumes:
@@ -50,7 +56,7 @@ services:
     environment:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     depends_on:
       api:
         condition: service_healthy

@@ -1,7 +1,26 @@
 const configuredApiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
 
+function isLoopbackHost(hostname: string) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
+}
+
 function apiBase() {
-  if (configuredApiBase) return configuredApiBase.replace(/\/$/, "");
+  if (configuredApiBase) {
+    const trimmed = configuredApiBase.replace(/\/$/, "");
+    if (typeof window !== "undefined" && !isLoopbackHost(window.location.hostname)) {
+      try {
+        const parsed = new URL(trimmed);
+        if (isLoopbackHost(parsed.hostname)) {
+          parsed.protocol = window.location.protocol;
+          parsed.hostname = window.location.hostname;
+          return parsed.toString().replace(/\/$/, "");
+        }
+      } catch {
+        return trimmed;
+      }
+    }
+    return trimmed;
+  }
   if (typeof window !== "undefined") {
     return `${window.location.protocol}//${window.location.hostname}:8000`;
   }
@@ -33,6 +52,7 @@ export type Source = {
   attempts: SourceAttempt[];
   fetch: SourceFetch;
   summary: SourceSummary;
+  tagging: SourceTagging;
   auth: Record<string, unknown>;
   runtime?: SourceRuntime | null;
   spec_hash?: string;
@@ -75,6 +95,11 @@ export type SourceSummary = {
   window_days: number;
 };
 
+export type SourceTagging = {
+  mode: "feed" | "llm" | "default";
+  max_tags: number;
+};
+
 export type SourceRuntime = {
   last_run_at?: string | null;
   last_success_at?: string | null;
@@ -96,6 +121,7 @@ export type SourceDefinitionInput = {
   fetch: SourceFetch;
   fulltext: Record<string, unknown>;
   summary: SourceSummary;
+  tagging?: SourceTagging;
   filters?: { include_keywords?: string[]; exclude_keywords?: string[] };
   auth?: Record<string, unknown>;
   stability?: string;

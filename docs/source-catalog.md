@@ -31,6 +31,7 @@ config/sources/
 | `homepage` | 官网或栏目页。 |
 | `language` | 语言提示，如 `en`、`zh-CN`。 |
 | `tags` | 默认标签。 |
+| `tagging` | 单篇内容的标签策略。 |
 | `group` | UI 分组。 |
 | `priority` | 同组排序权重。 |
 | `fetch` | 抓取策略和 attempts。 |
@@ -73,6 +74,22 @@ attempt 可以配置：
 - `selectors`
 - `remove_selectors`
 - `min_detail_chars`
+
+## Tagging Policy
+
+`tagging` 控制单篇 item 入库时如何生成最终标签：
+
+- `mode: feed`：使用 RSS/Atom entry 自带的 category/tag，并合并 source 默认标签。适合 arXiv 这类标签稳定的 source。
+- `mode: llm`：忽略 feed 标签，使用已配置的 AI provider 生成主题标签，并合并 source 默认标签。适合 feed 标签容易混入页面 class 的 source。
+- `mode: default`：只使用 source 默认标签。
+
+可选字段：
+
+- `max_tags`：最终保留的最大标签数，默认 5。
+
+为避免单次抓取历史内容时产生大量同步 AI 请求，`llm` 模式每次 source 抓取最多会为 20 篇新内容生成标签；已有非默认标签的 item/source 关系会保留原标签，不会因为临时 AI 失败被降级为默认标签。标签生成的请求次数、错误与 token 会计入 AI 用量统计。
+
+所有模式都会先清洗标签，去掉 `px-0`、`cols-12`、`span-6`、`start-4`、`mb-0` 这类布局/CSS 噪声。
 
 ## Secret 规则
 

@@ -8,6 +8,9 @@ sources:
     group: Papers
     language: en
     tags: [paper, ai]
+    tagging:
+      mode: feed
+      max_tags: 5
     fetch:
       strategy: first_success
       interval_seconds: 3600
@@ -29,6 +32,9 @@ sources:
     group: Papers
     language: en
     tags: [paper, nlp]
+    tagging:
+      mode: feed
+      max_tags: 5
     fetch:
       strategy: first_success
       interval_seconds: 3600
@@ -50,6 +56,9 @@ sources:
     group: Papers
     language: en
     tags: [paper, software-engineering]
+    tagging:
+      mode: feed
+      max_tags: 5
     fetch:
       strategy: first_success
       interval_seconds: 3600

@@ -1,7 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
@@ -47,6 +47,16 @@ def init_db() -> None:
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _upgrade_sqlite_schema()
+
+
+def _upgrade_sqlite_schema() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+    with engine.begin() as connection:
+        source_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(sources)"))}
+        if source_columns and "tagging" not in source_columns:
+            connection.exec_driver_sql("ALTER TABLE sources ADD COLUMN tagging TEXT DEFAULT '{\"mode\":\"llm\",\"max_tags\":5}'")
 
 
 def get_db() -> Generator[Session, None, None]:

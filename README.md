@@ -6,7 +6,7 @@ Daily Info is a self-hosted reading desk for research papers, engineering blogs,
 
 ## Features
 
-- Unified feed for papers, blogs, and posts, with search, source filters, deterministic cross-source deduplication, summary status, read/star/hidden states, and tags.
+- Unified feed for papers, blogs, and posts, with search, source filters, deterministic cross-source deduplication, summary status, read/star/hidden states, and source-aware cleaned/generated tags.
 - Source Catalog backed by `config/sources/*.yaml`, with explicit subscriptions so only chosen sources are fetched and shown in the default feed.
 - Source preview and creation flow for RSS/Atom feeds, RSSHub routes, and HTML index fallback.
 - Background worker and scheduler for source fetching, fulltext extraction, and optional auto-summary jobs.
@@ -34,12 +34,19 @@ Open `http://localhost:3000`.
 
 The default Compose stack starts:
 
-- `api`: FastAPI backend on port `8000`
-- `web`: Next.js frontend on port `3000`
+- `api`: FastAPI backend on `127.0.0.1:8000`
+- `web`: Next.js frontend on `127.0.0.1:3000`
 - `worker`: background job runner
 - `scheduler`: periodic fetch and summary scheduler
 
 SQLite data is stored at `/data/daily-info.db` inside the backend containers and persisted in the `daily_info_data` Docker volume.
+
+For tailnet access, keep the containers bound to localhost and let Tailscale Serve own the tailnet-facing ports:
+
+```bash
+sudo tailscale serve --https=443 http://127.0.0.1:3000
+sudo tailscale serve --https=8000 http://127.0.0.1:8000
+```
 
 ## Configuration
 
@@ -50,7 +57,7 @@ Common settings:
 | Variable | Description |
 | --- | --- |
 | `DATABASE_URL` | Database connection string. Docker defaults to `sqlite:////data/daily-info.db`. |
-| `NEXT_PUBLIC_API_BASE_URL` | API URL used by the browser. Defaults to `http://localhost:8000`. |
+| `NEXT_PUBLIC_API_BASE_URL` | API URL used by the browser. Defaults to `http://localhost:8000`; when a localhost value is used from a non-localhost page, the frontend rewrites it to the current hostname on port `8000` for Tailscale Serve access. |
 | `RSSHUB_PUBLIC_INSTANCES` | Comma-separated public RSSHub instances used for RSSHub routes. |
 | `RSSHUB_SELF_HOSTED_BASE_URL` | Optional private RSSHub instance. |
 | `LLM_PROVIDER_TYPE` | `none`, `openai_compatible`, or `codex_cli`. |

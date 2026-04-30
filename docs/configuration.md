@@ -12,7 +12,14 @@ docker compose up -d
 - Web：`http://localhost:3000`
 - API docs：`http://localhost:8000/docs`
 
-默认 Compose 栈使用 SQLite，数据库文件位于后端容器内的 `/data/daily-info.db`，并通过 `daily_info_data` Docker volume 持久化。
+默认 Compose 栈只监听本机回环地址：Web 在 `127.0.0.1:3000`，API 在 `127.0.0.1:8000`。SQLite 数据库文件位于后端容器内的 `/data/daily-info.db`，并通过 `daily_info_data` Docker volume 持久化。
+
+如果需要在自己的笔记本通过 tailnet 访问，推荐让 Tailscale Serve 负责对外入口，容器仍只监听 localhost：
+
+```bash
+sudo tailscale serve --https=443 http://127.0.0.1:3000
+sudo tailscale serve --https=8000 http://127.0.0.1:8000
+```
 
 ## 常用环境变量
 
@@ -21,7 +28,7 @@ docker compose up -d
 | `DATABASE_URL` | 数据库连接串。Docker 默认是 `sqlite:////data/daily-info.db`。 |
 | `PUBLIC_APP_URL` | 应用公开访问地址。 |
 | `API_BASE_URL` | 后端内部 API 地址。 |
-| `NEXT_PUBLIC_API_BASE_URL` | 浏览器访问 API 的地址，默认 `http://localhost:8000`。 |
+| `NEXT_PUBLIC_API_BASE_URL` | 浏览器访问 API 的地址，默认 `http://localhost:8000`；非 localhost 页面会把 localhost API 地址自动改写为当前 hostname 的 `:8000`，用于 Tailscale Serve。 |
 | `RSSHUB_PUBLIC_INSTANCES` | 逗号分隔的公共 RSSHub 实例列表。 |
 | `RSSHUB_SELF_HOSTED_BASE_URL` | 可选自托管 RSSHub 地址。 |
 | `LLM_PROVIDER_TYPE` | `none`、`openai_compatible` 或 `codex_cli`。 |
@@ -70,6 +77,8 @@ RSSHub 是可选增强。系统会按配置的实例顺序尝试 RSSHub route，
 - `LLM_PROVIDER_TYPE=codex_cli`
 - `CODEX_CLI_PATH`
 - `CODEX_CLI_MODEL`
+
+AI provider 也会被 `tagging.mode: llm` 的 source 用于生成单篇主题标签。如果 provider 不可用或调用失败，抓取不会失败，系统会回退到 source 默认标签。为控制费用和运行时间，每次 source 抓取最多同步生成 20 篇新内容的标签；已有非默认标签的 item/source 不会因为后续临时失败被覆盖为默认标签。标签生成的请求、错误和 token 会计入 AI 用量统计。
 
 ## 安全注意事项
 
