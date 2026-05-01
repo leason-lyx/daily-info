@@ -46,3 +46,26 @@ sources:
       window_days: 7
     auth:
       mode: none
+  - id: arize-blog
+    title: Arize Blog
+    kind: blog
+    platform: arize
+    homepage: https://arize.com/blog/
+    group: Engineering Blogs
+    language: en
+    tags: [arize, ai, evals]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://arize.com/feed/
+    fulltext:
+      mode: feed_then_detail
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
