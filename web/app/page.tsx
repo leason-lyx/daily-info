@@ -100,6 +100,14 @@ function summarizeButtonLabel(status: string) {
   return "生成中文摘要";
 }
 
+function readStatusLabel(read: boolean) {
+  return read ? "已读" : "未读";
+}
+
+function readButtonLabel(read: boolean) {
+  return read ? "标为未读" : "标为已读";
+}
+
 function fallbackSnippet(item: Item) {
   const text = item.summary || item.raw_text || "";
   return text ? `${text.slice(0, 360)}${text.length > 360 ? "..." : ""}` : "No summary text available yet.";
@@ -140,6 +148,7 @@ function sourceGroupRank(groupName: string) {
 function itemQueryFromFilters(searchParams: URLSearchParams, sourceRows: Source[]) {
   const next = new URLSearchParams(searchParams.toString());
   const sourceParams = next.getAll("source_id");
+  next.delete("hidden");
   next.delete("source_id");
   const selectedSourceIds = sourceIdsForItemsQuery(sourceRows, sourceParams);
   if (!selectedSourceIds.length) {
@@ -255,11 +264,12 @@ function FeedView() {
   }
 
   function replaceQuery(next: URLSearchParams) {
+    next.delete("hidden");
     const queryString = next.toString();
     startTransition(() => router.replace(queryString ? `${pathname}?${queryString}` : pathname));
   }
 
-  async function itemAction(item: Item, action: "read" | "star" | "hide" | "resummarize") {
+  async function itemAction(item: Item, action: "read" | "star" | "resummarize") {
     const updated = action === "resummarize" ? await api.resummarize(item.id) : await api.markItem(item.id, action);
     setItems((rows) => rows.map((row) => (row.id === item.id ? updated : row)));
     if (action === "resummarize" && updated.summary_status === "pending") {
@@ -329,14 +339,6 @@ function FeedView() {
               <option value="pending">Summarizing</option>
               <option value="ready">AI summary ready</option>
               <option value="failed">Summary failed</option>
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="feed-visibility">Visibility</label>
-            <select id="feed-visibility" value={searchParams.get("hidden") || "false"} onChange={(e) => setParam("hidden", e.target.value)}>
-              <option value="false">Visible</option>
-              <option value="">All</option>
-              <option value="true">Hidden</option>
             </select>
           </div>
         </div>
@@ -490,13 +492,15 @@ function FeedView() {
                 <a className="button" href={item.url} target="_blank" rel="noreferrer">
                   <ExternalLink size={16} /> Original
                 </a>
+                <span className={item.read ? "badge readStatus readStatusDone" : "badge readStatus"}>{readStatusLabel(item.read)}</span>
                 <button
-                  className="iconButton"
-                  title={item.read ? "Mark as unread" : "Mark as read"}
-                  aria-label={item.read ? "Mark as unread" : "Mark as read"}
+                  className="button readToggleButton"
+                  title={readButtonLabel(item.read)}
+                  aria-label={readButtonLabel(item.read)}
                   onClick={() => itemAction(item, "read")}
                 >
                   {item.read ? <EyeOff size={16} /> : <Eye size={16} />}
+                  {readButtonLabel(item.read)}
                 </button>
                 <button
                   className="iconButton"
@@ -505,9 +509,6 @@ function FeedView() {
                   onClick={() => itemAction(item, "star")}
                 >
                   <Star size={16} fill={item.starred ? "currentColor" : "none"} />
-                </button>
-                <button className="iconButton" title="Hide item" aria-label="Hide item" onClick={() => itemAction(item, "hide")}>
-                  <EyeOff size={16} />
                 </button>
                 <button className="button" title={summarizeButtonLabel(item.summary_status)} onClick={() => itemAction(item, "resummarize")} disabled={summarizeDisabled}>
                   <RefreshCcw size={16} />

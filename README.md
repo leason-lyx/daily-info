@@ -6,7 +6,7 @@ Daily Info is a self-hosted reading desk for research papers, engineering blogs,
 
 ## Features
 
-- Unified feed for papers, blogs, and posts, with search, source filters, deterministic cross-source deduplication, summary status, read/star/hidden states, and source-aware cleaned/generated tags.
+- Unified feed for papers, blogs, and posts, with search, source filters, deterministic cross-source deduplication, summary status, read/star states, and source-aware cleaned/generated tags.
 - Source Catalog backed by `config/sources/*.yaml`, with explicit subscriptions so only chosen sources are fetched and shown in the default feed.
 - Source preview and creation flow for RSS/Atom feeds, RSSHub routes, and HTML index fallback.
 - Background worker and scheduler for source fetching, fulltext extraction, and optional auto-summary jobs.

@@ -950,7 +950,26 @@ textarea {
 .actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
+}
+
+.readStatus {
+  min-height: 34px;
+  padding: 7px 10px;
+  border-color: #c7d7e8;
+  background: #f5f9fd;
+  color: #24415f;
+}
+
+.readStatusDone {
+  border-color: #b7e4cf;
+  background: #e9f8f1;
+  color: var(--good);
+}
+
+.readToggleButton {
+  min-width: 96px;
 }
 
 .sourceActions {
