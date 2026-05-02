@@ -1245,11 +1245,46 @@ textarea {
 .sourceEditor {
   grid-column: 1 / -1;
   margin-top: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+.sourceEditorHead,
+.sourceEditorActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sourceEditorHead {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.sourceEditorHead h4 {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.sourceEditorActions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.sourceEditorGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 12px;
 }
 
 .sourceEditor textarea {
-  min-height: 160px;
+  min-height: 96px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.sourceEditorCheck {
+  align-self: end;
+  min-height: 38px;
 }
 
 .healthPage {
@@ -1856,6 +1891,14 @@ textarea {
 
   .sourceHeader {
     grid-template-columns: 1fr;
+  }
+
+  .sourceEditorHead,
+  .sourceEditorActions,
+  .sourceEditorGrid {
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-content: stretch;
   }
 
   .sourceGroupHead {

@@ -18,6 +18,7 @@ from app.schemas import (
     LLMProviderIn,
     PreviewRequest,
     PreviewResponse,
+    SourceDefinitionPatch,
     SettingsOut,
     SettingsPatch,
     SourceDefinitionIn,
@@ -41,6 +42,7 @@ from app.services import (
     llm_usage_stats,
     latest_runs,
     patch_source,
+    patch_source_definition,
     query_items,
     queue_auto_summaries,
     queue_job,
@@ -161,6 +163,22 @@ def create_source_catalog_entry(payload: SourceDefinitionIn, db: Db):
         return create_source_definition(db, payload, subscribe=True)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.patch("/api/source-definitions/{source_id}", response_model=SourceDefinitionOut)
+def update_source_catalog_entry(source_id: str, payload: SourceDefinitionPatch, db: Db):
+    source = db.execute(select(Source).options(selectinload(Source.attempts), selectinload(Source.subscription), selectinload(Source.runtime)).where(Source.id == source_id)).scalar_one_or_none()
+    if not source:
+        raise HTTPException(status_code=404, detail="Source definition not found")
+    try:
+        updated = patch_source_definition(db, source, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Source definition not found in catalog") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if payload.summary is not None:
+        queue_auto_summaries(db, load_runtime_settings(db), source_id=source.id, limit=20)
+    return updated
 
 
 @app.post("/api/sources", response_model=SourceDefinitionOut)

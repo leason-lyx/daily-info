@@ -71,7 +71,7 @@ Secrets belong in `.env` or `.env.local`, never in source catalog files. The Doc
 
 ## Source Catalog
 
-Built-in source definitions live in `config/sources/*.yaml`. They are synchronized into the database at startup as catalog entries.
+Built-in source definitions live in `config/sources/*.yaml`. They are synchronized into the database at startup as catalog entries. The Source Catalog page can edit safe per-source options such as auto-summary policy, fetch interval, fulltext policy, tagging policy, default tags, filters, group, priority, and language; those edits are written back to the YAML file and then synchronized into the database.
 
 Catalog entries are opt-in:
 
@@ -81,7 +81,7 @@ Catalog entries are opt-in:
 
 When the same content appears in multiple sources, Daily Info stores one item keyed by `dedupe_key` and records every source in `item_sources`. Feed and API responses expose those origins through `sources[]`; the single `source_id/source_name` pair is the primary source for display.
 
-Source definition files may include fetch attempts, fulltext policy, summary policy, filters, tags, grouping, and metadata. They should not contain API keys, cookies, tokens, or other secrets. If a source eventually needs credentials, store only a secret reference in catalog metadata and keep the secret value in runtime configuration.
+Source definition files may include fetch attempts, fulltext policy, summary policy, filters, tags, grouping, and metadata. They should not contain API keys, cookies, tokens, or other secrets, including when edited from the web UI. If a source eventually needs credentials, store only a secret reference in catalog metadata and keep the secret value in runtime configuration.
 
 ## Local Development
 
