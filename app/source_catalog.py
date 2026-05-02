@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -9,12 +10,13 @@ import yaml
 from sqlalchemy.orm import Session
 
 from app.models import Source, SourceAttempt
-from app.schemas import FetchAttemptIn, SourceDefinitionIn
+from app.schemas import FetchAttemptIn, SourceDefinitionIn, SourceDefinitionPatch
 from app.tags import DEFAULT_TAGGING, normalize_tagging_config
 from app.utils import dumps, loads
 
 
 SOURCE_CATALOG_DIR = Path(__file__).resolve().parent.parent / "config" / "sources"
+CUSTOM_CATALOG_FILE = "custom.yaml"
 
 
 def canonical_definition_json(definition: SourceDefinitionIn) -> str:
@@ -25,8 +27,8 @@ def source_definition_hash(definition: SourceDefinitionIn) -> str:
     return hashlib.sha256(canonical_definition_json(definition).encode("utf-8")).hexdigest()
 
 
-def load_source_catalog(directory: str | Path = SOURCE_CATALOG_DIR) -> list[tuple[SourceDefinitionIn, str]]:
-    root = Path(directory)
+def load_source_catalog(directory: str | Path | None = None) -> list[tuple[SourceDefinitionIn, str]]:
+    root = Path(directory or SOURCE_CATALOG_DIR)
     definitions: list[tuple[SourceDefinitionIn, str]] = []
     seen: dict[str, str] = {}
     for path in sorted(root.glob("*.yaml")):
@@ -42,7 +44,136 @@ def load_source_catalog(directory: str | Path = SOURCE_CATALOG_DIR) -> list[tupl
     return definitions
 
 
-def sync_source_catalog(db: Session, directory: str | Path = SOURCE_CATALOG_DIR) -> int:
+def append_source_definition_to_catalog(
+    definition: SourceDefinitionIn,
+    catalog_file: str = CUSTOM_CATALOG_FILE,
+    directory: str | Path | None = None,
+) -> str:
+    root = Path(directory or SOURCE_CATALOG_DIR)
+    if _source_id_exists(definition.id, root):
+        raise ValueError("Source id already exists")
+    path, payload = _catalog_payload(catalog_file, root)
+    sources = _payload_sources(payload)
+    sources.append(definition.model_dump(mode="json"))
+    _write_catalog_payload(path, payload)
+    return path.name
+
+
+def update_source_definition_in_catalog(
+    source_id: str,
+    patch: SourceDefinitionPatch,
+    *,
+    catalog_file: str = "",
+    current_definition: SourceDefinitionIn | None = None,
+    directory: str | Path | None = None,
+) -> tuple[SourceDefinitionIn, str]:
+    root = Path(directory or SOURCE_CATALOG_DIR)
+    found = _find_source_payload(source_id, root, preferred_file=catalog_file)
+    if found is None:
+        if current_definition is None:
+            raise KeyError(source_id)
+        catalog_file = append_source_definition_to_catalog(current_definition, directory=root)
+        found = _find_source_payload(source_id, root, preferred_file=catalog_file)
+    if found is None:
+        raise KeyError(source_id)
+
+    path, payload, index, raw_definition = found
+    updated = apply_source_definition_patch(SourceDefinitionIn.model_validate(raw_definition), patch)
+    _payload_sources(payload)[index] = updated.model_dump(mode="json")
+    _write_catalog_payload(path, payload)
+    return updated, path.name
+
+
+def apply_source_definition_patch(definition: SourceDefinitionIn, patch: SourceDefinitionPatch) -> SourceDefinitionIn:
+    data = definition.model_dump(mode="json")
+    patch_data = patch.model_dump(mode="json", exclude_unset=True)
+    for field in ["language", "tags", "group", "priority", "fulltext", "summary", "tagging", "filters"]:
+        if field in patch_data:
+            data[field] = patch_data[field]
+    if "fetch" in patch_data:
+        fetch_patch = patch_data["fetch"] or {}
+        if "interval_seconds" in fetch_patch:
+            data.setdefault("fetch", {})["interval_seconds"] = fetch_patch["interval_seconds"]
+    return SourceDefinitionIn.model_validate(data)
+
+
+def _source_id_exists(source_id: str, root: Path) -> bool:
+    if not root.exists():
+        return False
+    for definition, _catalog_file in load_source_catalog(root):
+        if definition.id == source_id:
+            return True
+    return False
+
+
+def _catalog_payload(catalog_file: str, root: Path) -> tuple[Path, dict[str, Any]]:
+    path = _catalog_path(catalog_file, root)
+    if not path.exists():
+        return path, {"schema_version": 1, "sources": []}
+    payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path} must contain a YAML mapping")
+    if payload.get("schema_version") != 1:
+        raise ValueError(f"{path} must declare schema_version: 1")
+    _payload_sources(payload)
+    return path, payload
+
+
+def _catalog_path(catalog_file: str, root: Path) -> Path:
+    filename = Path(catalog_file or CUSTOM_CATALOG_FILE).name
+    if filename in {"", "."}:
+        filename = CUSTOM_CATALOG_FILE
+    if not filename.endswith((".yaml", ".yml")):
+        filename = CUSTOM_CATALOG_FILE
+    return root / filename
+
+
+def _payload_sources(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    sources = payload.setdefault("sources", [])
+    if not isinstance(sources, list):
+        raise ValueError("catalog sources must be a list")
+    return sources
+
+
+def _find_source_payload(
+    source_id: str,
+    root: Path,
+    *,
+    preferred_file: str = "",
+) -> tuple[Path, dict[str, Any], int, dict[str, Any]] | None:
+    candidate_paths: list[Path] = []
+    preferred_path = _catalog_path(preferred_file, root) if preferred_file else None
+    if preferred_path and preferred_path.exists():
+        candidate_paths.append(preferred_path)
+    if root.exists():
+        candidate_paths.extend(path for path in sorted(root.glob("*.yaml")) if path not in candidate_paths)
+    for path in candidate_paths:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            continue
+        for index, raw in enumerate(_payload_sources(payload)):
+            if isinstance(raw, dict) and raw.get("id") == source_id:
+                return path, payload, index, raw
+    return None
+
+
+def _write_catalog_payload(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for raw in _payload_sources(payload):
+        SourceDefinitionIn.model_validate(raw)
+    rendered = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path.write_text(rendered, encoding="utf-8")
+    reloaded = yaml.safe_load(tmp_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(reloaded, dict) or reloaded.get("schema_version") != 1:
+        tmp_path.unlink(missing_ok=True)
+        raise ValueError(f"{path} failed catalog validation")
+    for raw in _payload_sources(reloaded):
+        SourceDefinitionIn.model_validate(raw)
+    os.replace(tmp_path, path)
+
+
+def sync_source_catalog(db: Session, directory: str | Path | None = None) -> int:
     count = 0
     for definition, catalog_file in load_source_catalog(directory):
         upsert_source_definition(db, definition, catalog_file=catalog_file, builtin=True)

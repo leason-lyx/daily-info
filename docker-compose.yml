@@ -11,6 +11,7 @@ services:
     command: ["uvicorn", "app.api:app", "--host", "127.0.0.1", "--port", "8000"]
     volumes:
       - daily_info_data:/data
+      - ./config/sources:/app/config/sources
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).read()"]
       interval: 10s
@@ -29,6 +30,7 @@ services:
     command: ["python", "-m", "app.worker"]
     volumes:
       - daily_info_data:/data
+      - ./config/sources:/app/config/sources:ro
     depends_on:
       api:
         condition: service_healthy
@@ -44,6 +46,7 @@ services:
     command: ["python", "-m", "app.scheduler"]
     volumes:
       - daily_info_data:/data
+      - ./config/sources:/app/config/sources:ro
     depends_on:
       api:
         condition: service_healthy

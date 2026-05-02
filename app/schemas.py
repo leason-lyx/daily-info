@@ -137,6 +137,22 @@ class SourceDefinitionOut(SourceDefinitionIn):
     stability_level: str = "stable"
 
 
+class FetchConfigPatch(BaseModel):
+    interval_seconds: int | None = Field(default=None, ge=60)
+
+
+class SourceDefinitionPatch(BaseModel):
+    language: str | None = None
+    tags: list[str] | None = None
+    group: str | None = None
+    priority: int | None = Field(default=None, ge=0)
+    fetch: FetchConfigPatch | None = None
+    fulltext: FulltextPolicyIn | None = None
+    summary: SummaryPolicyIn | None = None
+    tagging: TaggingPolicyIn | None = None
+    filters: ProcessingFiltersIn | None = None
+
+
 class SourceIn(BaseModel):
     id: str
     name: str

@@ -1266,6 +1266,230 @@ def test_catalog_sources_are_opt_in_subscriptions(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_source_definition_patch_writes_yaml_and_syncs_database(tmp_path: Path) -> None:
+    catalog_dir = tmp_path / "catalog"
+    source_yaml = """
+schema_version: 1
+sources:
+  - id: editable
+    title: Editable Source
+    kind: blog
+    platform: test
+    homepage: https://example.com
+    group: Test
+    language: en
+    tags: [old]
+    tagging:
+      mode: default
+      max_tags: 5
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://example.com/feed.xml
+    fulltext:
+      mode: feed_only
+      min_feed_chars: 1200
+      max_detail_pages_per_run: 0
+    summary:
+      auto: false
+      window_days: 7
+    auth:
+      mode: none
+""".lstrip()
+    result = run_python(
+        f"""
+        from pathlib import Path
+
+        import yaml
+        from fastapi.testclient import TestClient
+
+        import app.source_catalog as source_catalog
+
+        source_catalog.SOURCE_CATALOG_DIR = Path({str(catalog_dir)!r})
+        source_catalog.SOURCE_CATALOG_DIR.mkdir(parents=True, exist_ok=True)
+        source_file = source_catalog.SOURCE_CATALOG_DIR / "test.yaml"
+        source_file.write_text({source_yaml!r}, encoding="utf-8")
+
+        from app.api import app
+        from app.db import SessionLocal
+        from app.models import Source
+        from app.utils import loads
+
+        with TestClient(app) as client:
+            response = client.patch("/api/source-definitions/editable", json={{
+                "summary": {{"auto": True, "window_days": 3}},
+                "fetch": {{"interval_seconds": 7200}},
+                "fulltext": {{"mode": "feed_then_detail", "min_feed_chars": 800, "max_detail_pages_per_run": 5}},
+                "tagging": {{"mode": "llm", "max_tags": 6}},
+                "tags": ["new", "ai"],
+                "filters": {{"include_keywords": ["research"], "exclude_keywords": ["sponsored"]}},
+                "group": "Updated",
+                "priority": 42,
+                "language": "zh-CN",
+            }})
+            assert response.status_code == 200, response.text
+            data = response.json()
+            assert data["summary"] == {{"auto": True, "window_days": 3}}
+            assert data["auto_summary_enabled"] is True
+            assert data["auto_summary_days"] == 3
+            assert data["fetch"]["interval_seconds"] == 7200
+
+            refreshed = client.get("/api/source-definitions")
+            assert refreshed.status_code == 200, refreshed.text
+            row = next(source for source in refreshed.json() if source["id"] == "editable")
+            assert row["summary"] == {{"auto": True, "window_days": 3}}
+
+        payload = yaml.safe_load(source_file.read_text(encoding="utf-8"))
+        raw = payload["sources"][0]
+        assert raw["summary"] == {{"auto": True, "window_days": 3}}
+        assert raw["fetch"]["interval_seconds"] == 7200
+        assert raw["fulltext"]["mode"] == "feed_then_detail"
+        assert raw["tagging"] == {{"mode": "llm", "max_tags": 6}}
+        assert raw["tags"] == ["new", "ai"]
+        assert raw["filters"] == {{"include_keywords": ["research"], "exclude_keywords": ["sponsored"]}}
+
+        with SessionLocal() as db:
+            source = db.get(Source, "editable")
+            assert source.auto_summary_enabled is True
+            assert source.auto_summary_days == 3
+            assert source.poll_interval == 7200
+            assert source.group == "Updated"
+            assert source.priority == 42
+            assert source.language_hint == "zh-CN"
+            assert loads(source.spec_json, {{}})["summary"] == {{"auto": True, "window_days": 3}}
+            assert source.spec_hash
+            assert source.catalog_file == "test.yaml"
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "source-definition-patch.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_source_definition_patch_rejects_invalid_values_without_writing_yaml(tmp_path: Path) -> None:
+    catalog_dir = tmp_path / "catalog"
+    source_yaml = """
+schema_version: 1
+sources:
+  - id: invalid-window
+    title: Invalid Window
+    kind: blog
+    platform: test
+    homepage: https://example.com
+    group: Test
+    language: en
+    tags: [old]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://example.com/feed.xml
+    fulltext:
+      mode: feed_only
+    summary:
+      auto: false
+      window_days: 7
+    auth:
+      mode: none
+""".lstrip()
+    result = run_python(
+        f"""
+        from pathlib import Path
+
+        import yaml
+        from fastapi.testclient import TestClient
+
+        import app.source_catalog as source_catalog
+
+        source_catalog.SOURCE_CATALOG_DIR = Path({str(catalog_dir)!r})
+        source_catalog.SOURCE_CATALOG_DIR.mkdir(parents=True, exist_ok=True)
+        source_file = source_catalog.SOURCE_CATALOG_DIR / "test.yaml"
+        source_file.write_text({source_yaml!r}, encoding="utf-8")
+        original = source_file.read_text(encoding="utf-8")
+
+        from app.api import app
+        from app.db import SessionLocal
+        from app.models import Source
+
+        with TestClient(app) as client:
+            response = client.patch("/api/source-definitions/invalid-window", json={{"summary": {{"auto": True, "window_days": 0}}}})
+            assert response.status_code == 422, response.text
+
+        assert source_file.read_text(encoding="utf-8") == original
+        with SessionLocal() as db:
+            source = db.get(Source, "invalid-window")
+            assert source.auto_summary_enabled is False
+            assert source.auto_summary_days == 7
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "source-definition-invalid-patch.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_create_source_definition_writes_custom_yaml(tmp_path: Path) -> None:
+    catalog_dir = tmp_path / "catalog"
+    result = run_python(
+        f"""
+        from pathlib import Path
+
+        import yaml
+        from fastapi.testclient import TestClient
+
+        import app.source_catalog as source_catalog
+
+        source_catalog.SOURCE_CATALOG_DIR = Path({str(catalog_dir)!r})
+        source_catalog.SOURCE_CATALOG_DIR.mkdir(parents=True, exist_ok=True)
+
+        from app.api import app
+        from app.db import SessionLocal
+        from app.models import Source, SourceSubscription
+
+        payload = {{
+            "id": "custom-web",
+            "title": "Custom Web",
+            "kind": "blog",
+            "platform": "custom",
+            "homepage": "https://example.com",
+            "language": "en",
+            "tags": ["custom"],
+            "group": "Custom",
+            "fetch": {{
+                "strategy": "first_success",
+                "interval_seconds": 3600,
+                "attempts": [{{"adapter": "feed", "url": "https://example.com/feed.xml"}}],
+            }},
+            "fulltext": {{"mode": "feed_only"}},
+            "summary": {{"auto": True, "window_days": 5}},
+            "auth": {{"mode": "none"}},
+        }}
+
+        with TestClient(app) as client:
+            response = client.post("/api/source-definitions", json=payload)
+            assert response.status_code == 200, response.text
+            assert response.json()["catalog_file"] == "custom.yaml"
+
+        custom_file = source_catalog.SOURCE_CATALOG_DIR / "custom.yaml"
+        data = yaml.safe_load(custom_file.read_text(encoding="utf-8"))
+        assert data["schema_version"] == 1
+        assert [source["id"] for source in data["sources"]] == ["custom-web"]
+        assert data["sources"][0]["summary"] == {{"auto": True, "window_days": 5}}
+
+        with SessionLocal() as db:
+            source = db.get(Source, "custom-web")
+            assert source.catalog_file == "custom.yaml"
+            subscription = db.get(SourceSubscription, "custom-web")
+            assert subscription and subscription.subscribed
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "source-definition-custom-yaml.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_feed_defaults_to_subscribed_sources(tmp_path: Path) -> None:
     result = run_python(
         """

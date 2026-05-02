@@ -11,8 +11,8 @@ from app.catalog import DEFAULT_SOURCE_PACK_PATH
 from app.config import Settings, get_settings
 from app.fulltext import extract_generic_article, strip_html
 from app.models import Fulltext, Item, ItemSource, Job, JobStatus, LLMProvider, LLMUsageEvent, RawEntry, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
-from app.schemas import ItemOut, SourceAttemptIn, SourceAttemptOut, SourceDefinitionIn, SourceDefinitionOut, SourceOut, SourcePatch, SourceRuntimeOut, SourceIn
-from app.source_catalog import definition_from_source, sync_source_catalog, upsert_source_definition
+from app.schemas import ItemOut, SourceAttemptIn, SourceAttemptOut, SourceDefinitionIn, SourceDefinitionOut, SourceDefinitionPatch, SourceOut, SourcePatch, SourceRuntimeOut, SourceIn
+from app.source_catalog import append_source_definition_to_catalog, definition_from_source, sync_source_catalog, update_source_definition_in_catalog, upsert_source_definition
 from app.subscriptions import subscribed_source_ids
 from app.summary import generate_tags_codex_cli, generate_tags_openai_compatible
 from app.tags import merge_tags, normalize_tagging_config, sanitize_tags
@@ -747,9 +747,24 @@ def list_source_definitions(db: Session) -> list[SourceDefinitionOut]:
 def create_source_definition(db: Session, definition: SourceDefinitionIn, subscribe: bool = True) -> SourceDefinitionOut:
     if db.get(Source, definition.id):
         raise ValueError("Source id already exists")
-    source = upsert_source_definition(db, definition, catalog_file="custom", builtin=False)
+    catalog_file = append_source_definition_to_catalog(definition)
+    source = upsert_source_definition(db, definition, catalog_file=catalog_file, builtin=False)
     if subscribe:
         db.add(SourceSubscription(source_id=source.id, subscribed=True))
+    db.commit()
+    db.refresh(source)
+    return source_definition_to_out(source)
+
+
+def patch_source_definition(db: Session, source: Source, patch: SourceDefinitionPatch) -> SourceDefinitionOut:
+    current_definition = definition_from_source(source)
+    updated_definition, catalog_file = update_source_definition_in_catalog(
+        source.id,
+        patch,
+        catalog_file=source.catalog_file,
+        current_definition=current_definition,
+    )
+    upsert_source_definition(db, updated_definition, catalog_file=catalog_file, builtin=source.is_builtin)
     db.commit()
     db.refresh(source)
     return source_definition_to_out(source)

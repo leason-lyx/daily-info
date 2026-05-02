@@ -18,6 +18,8 @@ config/sources/
 
 每个 YAML 文件包含一组 source definitions。应用启动时会同步这些定义到数据库。同步不会把未订阅 source 自动加入默认 feed。
 
+`/sources` 页面可以编辑低风险 source 配置。保存时后端会先更新对应 YAML 文件，再把同一份 definition 同步到数据库，避免“网页显示值”和“下次启动同步值”分裂。网页新建的 custom source 会写入 `config/sources/custom.yaml`。
+
 ## Source Definition 字段
 
 常用字段：
@@ -75,6 +77,8 @@ attempt 可以配置：
 - `remove_selectors`
 - `min_detail_chars`
 
+网页编辑 v1 开放 `mode`、`min_feed_chars` 和 `max_detail_pages_per_run`。
+
 ## Tagging Policy
 
 `tagging` 控制单篇 item 入库时如何生成最终标签：
@@ -86,6 +90,8 @@ attempt 可以配置：
 可选字段：
 
 - `max_tags`：最终保留的最大标签数，默认 5。
+
+网页编辑 v1 开放 `mode` 和 `max_tags`。
 
 为避免单次抓取历史内容时产生大量同步 AI 请求，`llm` 模式每次 source 抓取最多会为 20 篇新内容生成标签；已有非默认标签的 item/source 关系会保留原标签，不会因为临时 AI 失败被降级为默认标签。标签生成的请求次数、错误与 token 会计入 AI 用量统计。
 
@@ -105,6 +111,8 @@ Source catalog 不能包含真实 secret 值。
 
 如果未来某个 source 需要认证，catalog 中只保存 `secret_ref` 这样的引用名，真实 secret 放在 `.env`、settings 或其他运行时 secret store。
 
+网页编辑也遵守同一规则：不要在 source 的标签、过滤词、URL、metadata 或 auth 字段里保存真实 secret。
+
 ## 新增 Source 建议
 
 优先级：
@@ -119,3 +127,4 @@ Source catalog 不能包含真实 secret 值。
 - 在 `/sources` 里 preview。
 - 订阅后手动 fetch 一次。
 - 到 `/health` 查看最近 run、错误和全文覆盖情况。
+- 如果从网页修改 source 配置，确认对应 `config/sources/*.yaml` 已更新。

@@ -2,14 +2,31 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Eye, Play, Plus, RefreshCcw, Search } from "lucide-react";
-import { api, Source } from "@/lib/api";
+import { Eye, Play, Plus, RefreshCcw, Save, Search, SlidersHorizontal, X } from "lucide-react";
+import { api, Source, SourceDefinitionPatchInput } from "@/lib/api";
 
 type Filters = {
   q: string;
   group: string;
   kind: string;
   platform: string;
+  language: string;
+};
+
+type SourceEditorState = {
+  autoSummary: boolean;
+  summaryWindowDays: string;
+  intervalSeconds: string;
+  fulltextMode: "feed_only" | "detail_only" | "feed_then_detail";
+  minFeedChars: string;
+  maxDetailPages: string;
+  taggingMode: "feed" | "llm" | "default";
+  maxTags: string;
+  tagsText: string;
+  includeText: string;
+  excludeText: string;
+  group: string;
+  priority: string;
   language: string;
 };
 
@@ -23,6 +40,8 @@ export default function SourcesPage() {
   const [hasLoadedSources, setHasLoadedSources] = useState(false);
   const [isRefreshingSources, setIsRefreshingSources] = useState(false);
   const [pendingActions, setPendingActions] = useState<Set<string>>(() => new Set());
+  const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
+  const [editor, setEditor] = useState<SourceEditorState | null>(null);
 
   function isPending(actionId: string) {
     return pendingActions.has(actionId);
@@ -164,6 +183,40 @@ export default function SourcesPage() {
     }
   }
 
+  function toggleEditor(source: Source) {
+    if (editingSourceId === source.id) {
+      setEditingSourceId(null);
+      setEditor(null);
+      return;
+    }
+    setEditingSourceId(source.id);
+    setEditor(editorFromSource(source));
+    setMessage("");
+  }
+
+  function updateEditor(patch: Partial<SourceEditorState>) {
+    setEditor((current) => current ? { ...current, ...patch } : current);
+  }
+
+  async function saveConfig(source: Source) {
+    if (!editor) return;
+    const actionId = `${source.id}:config`;
+    startPending(actionId);
+    setMessage("");
+    try {
+      const body = patchFromEditor(editor, source);
+      await api.patchSourceDefinition(source.id, body);
+      setMessage(`Saved ${sourceTitle(source)} to YAML and synchronized the database.`);
+      await reload({ clearMessageOnSuccess: false });
+      setEditingSourceId(null);
+      setEditor(null);
+    } catch (err) {
+      setMessage(`Could not save ${sourceTitle(source)}: ${errorMessage(err)}`);
+    } finally {
+      finishPending(actionId);
+    }
+  }
+
   const subscribedCount = sources.filter((source) => source.subscribed).length;
   const isInitialLoading = !hasLoadedSources && !loadError;
   const sourceSummaryText = hasLoadedSources
@@ -244,7 +297,21 @@ export default function SourcesPage() {
                       <Play size={16} />
                       {isPending(`${source.id}:fetch`) ? "Queueing..." : "Fetch now"}
                     </button>
+                    <button className="button compact" title="Configure source" onClick={() => toggleEditor(source)} disabled={isPending(`${source.id}:config`)}>
+                      <SlidersHorizontal size={16} />
+                      {editingSourceId === source.id ? "Close" : "Configure"}
+                    </button>
                   </div>
+                  {editingSourceId === source.id && editor && (
+                    <SourceConfigEditor
+                      source={source}
+                      editor={editor}
+                      saving={isPending(`${source.id}:config`)}
+                      onChange={updateEditor}
+                      onSave={() => saveConfig(source)}
+                      onCancel={() => toggleEditor(source)}
+                    />
+                  )}
                 </article>
               ))}
             </div>
@@ -257,6 +324,100 @@ export default function SourcesPage() {
         )}
       </section>
       {message && <pre className="pre">{message}</pre>}
+    </div>
+  );
+}
+
+function SourceConfigEditor({
+  source,
+  editor,
+  saving,
+  onChange,
+  onSave,
+  onCancel,
+}: {
+  source: Source;
+  editor: SourceEditorState;
+  saving: boolean;
+  onChange: (patch: Partial<SourceEditorState>) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="sourceEditor">
+      <div className="sourceEditorHead">
+        <div>
+          <h4>Source configuration</h4>
+          <span className="subtle">{source.catalog_file || "custom.yaml"}</span>
+        </div>
+        <div className="sourceEditorActions">
+          <button className="button compact" onClick={onCancel} disabled={saving}>
+            <X size={16} /> Cancel
+          </button>
+          <button className="button compact primary" onClick={onSave} disabled={saving}>
+            <Save size={16} /> {saving ? "Saving..." : "Save YAML"}
+          </button>
+        </div>
+      </div>
+      <div className="sourceEditorGrid">
+        <label className="checkLine sourceEditorCheck">
+          <input type="checkbox" checked={editor.autoSummary} onChange={(event) => onChange({ autoSummary: event.target.checked })} />
+          Auto summary enabled
+        </label>
+        <EditorNumber label="Summary window days" value={editor.summaryWindowDays} min={1} onChange={(summaryWindowDays) => onChange({ summaryWindowDays })} />
+        <EditorNumber label="Fetch interval seconds" value={editor.intervalSeconds} min={60} onChange={(intervalSeconds) => onChange({ intervalSeconds })} />
+        <div className="field">
+          <label htmlFor={`${source.id}-fulltext-mode`}>Fulltext mode</label>
+          <select id={`${source.id}-fulltext-mode`} value={editor.fulltextMode} onChange={(event) => onChange({ fulltextMode: event.target.value as SourceEditorState["fulltextMode"] })}>
+            <option value="feed_only">feed_only</option>
+            <option value="detail_only">detail_only</option>
+            <option value="feed_then_detail">feed_then_detail</option>
+          </select>
+        </div>
+        <EditorNumber label="Min feed chars" value={editor.minFeedChars} min={0} onChange={(minFeedChars) => onChange({ minFeedChars })} />
+        <EditorNumber label="Detail pages per run" value={editor.maxDetailPages} min={0} onChange={(maxDetailPages) => onChange({ maxDetailPages })} />
+        <div className="field">
+          <label htmlFor={`${source.id}-tagging-mode`}>Tagging mode</label>
+          <select id={`${source.id}-tagging-mode`} value={editor.taggingMode} onChange={(event) => onChange({ taggingMode: event.target.value as SourceEditorState["taggingMode"] })}>
+            <option value="feed">feed</option>
+            <option value="llm">llm</option>
+            <option value="default">default</option>
+          </select>
+        </div>
+        <EditorNumber label="Max tags" value={editor.maxTags} min={1} max={12} onChange={(maxTags) => onChange({ maxTags })} />
+        <div className="field">
+          <label htmlFor={`${source.id}-group`}>Group</label>
+          <input id={`${source.id}-group`} value={editor.group} onChange={(event) => onChange({ group: event.target.value })} />
+        </div>
+        <EditorNumber label="Priority" value={editor.priority} min={0} onChange={(priority) => onChange({ priority })} />
+        <div className="field">
+          <label htmlFor={`${source.id}-language`}>Language</label>
+          <input id={`${source.id}-language`} value={editor.language} onChange={(event) => onChange({ language: event.target.value })} />
+        </div>
+        <EditorTextArea label="Default tags" value={editor.tagsText} onChange={(tagsText) => onChange({ tagsText })} />
+        <EditorTextArea label="Include keywords" value={editor.includeText} onChange={(includeText) => onChange({ includeText })} />
+        <EditorTextArea label="Exclude keywords" value={editor.excludeText} onChange={(excludeText) => onChange({ excludeText })} />
+      </div>
+    </div>
+  );
+}
+
+function EditorNumber({ label, value, min, max, onChange }: { label: string; value: string; min: number; max?: number; onChange: (value: string) => void }) {
+  const id = slugify(label);
+  return (
+    <div className="field">
+      <label htmlFor={id}>{label}</label>
+      <input id={id} type="number" min={min} max={max} value={value} onChange={(event) => onChange(event.target.value)} />
+    </div>
+  );
+}
+
+function EditorTextArea({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  const id = slugify(label);
+  return (
+    <div className="field">
+      <label htmlFor={id}>{label}</label>
+      <textarea id={id} value={value} onChange={(event) => onChange(event.target.value)} />
     </div>
   );
 }
@@ -448,4 +609,77 @@ function uniqueSorted(values: string[]) {
 
 function errorMessage(err: unknown) {
   return err instanceof Error ? err.message : String(err);
+}
+
+function editorFromSource(source: Source): SourceEditorState {
+  const fulltext = source.fulltext || {};
+  return {
+    autoSummary: Boolean(source.summary?.auto ?? source.auto_summary_enabled),
+    summaryWindowDays: String(source.summary?.window_days || source.auto_summary_days || 7),
+    intervalSeconds: String(source.fetch?.interval_seconds || source.poll_interval || 3600),
+    fulltextMode: fulltextMode(fulltext),
+    minFeedChars: String(numberValue(fulltext.min_feed_chars, 1200)),
+    maxDetailPages: String(numberValue(fulltext.max_detail_pages_per_run, 20)),
+    taggingMode: source.tagging?.mode || "llm",
+    maxTags: String(source.tagging?.max_tags || 5),
+    tagsText: (source.default_tags || source.tags || []).join("\n"),
+    includeText: (source.include_keywords || []).join("\n"),
+    excludeText: (source.exclude_keywords || []).join("\n"),
+    group: source.group || "General",
+    priority: String(source.priority ?? 100),
+    language: source.language || source.language_hint || "auto",
+  };
+}
+
+function patchFromEditor(editor: SourceEditorState, source: Source): SourceDefinitionPatchInput {
+  return {
+    language: editor.language.trim() || "auto",
+    tags: splitList(editor.tagsText),
+    group: editor.group.trim() || "General",
+    priority: positiveInteger(editor.priority, source.priority ?? 100, 0),
+    fetch: { interval_seconds: positiveInteger(editor.intervalSeconds, source.fetch?.interval_seconds || source.poll_interval || 3600, 60) },
+    fulltext: {
+      mode: editor.fulltextMode,
+      min_feed_chars: positiveInteger(editor.minFeedChars, 1200, 0),
+      max_detail_pages_per_run: positiveInteger(editor.maxDetailPages, 20, 0),
+      selectors: Array.isArray(source.fulltext?.selectors) ? source.fulltext.selectors as string[] : [],
+      remove_selectors: Array.isArray(source.fulltext?.remove_selectors) ? source.fulltext.remove_selectors as string[] : [],
+      min_detail_chars: numberValue(source.fulltext?.min_detail_chars, 200),
+    },
+    summary: {
+      auto: editor.autoSummary,
+      window_days: positiveInteger(editor.summaryWindowDays, source.summary?.window_days || source.auto_summary_days || 7, 1),
+    },
+    tagging: {
+      mode: editor.taggingMode,
+      max_tags: positiveInteger(editor.maxTags, source.tagging?.max_tags || 5, 1),
+    },
+    filters: {
+      include_keywords: splitList(editor.includeText),
+      exclude_keywords: splitList(editor.excludeText),
+    },
+  };
+}
+
+function fulltextMode(value: Record<string, unknown>): SourceEditorState["fulltextMode"] {
+  const mode = typeof value.mode === "string" ? value.mode : "";
+  if (mode === "detail_only" || mode === "feed_then_detail") return mode;
+  return "feed_only";
+}
+
+function splitList(value: string) {
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function positiveInteger(value: string, fallback: number, min: number) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, parsed);
+}
+
+function numberValue(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }

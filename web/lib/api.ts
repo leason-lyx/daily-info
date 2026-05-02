@@ -37,6 +37,7 @@ export type Source = {
   homepage: string;
   homepage_url: string;
   language: string;
+  tags: string[];
   enabled: boolean;
   subscribed: boolean;
   is_builtin: boolean;
@@ -125,6 +126,25 @@ export type SourceDefinitionInput = {
   filters?: { include_keywords?: string[]; exclude_keywords?: string[] };
   auth?: Record<string, unknown>;
   stability?: string;
+};
+
+export type SourceDefinitionPatchInput = {
+  language?: string;
+  tags?: string[];
+  group?: string;
+  priority?: number;
+  fetch?: { interval_seconds?: number };
+  fulltext?: {
+    mode: "feed_only" | "detail_only" | "feed_then_detail";
+    min_feed_chars: number;
+    max_detail_pages_per_run: number;
+    selectors?: string[];
+    remove_selectors?: string[];
+    min_detail_chars?: number;
+  };
+  summary?: SourceSummary;
+  tagging?: SourceTagging;
+  filters?: { include_keywords?: string[]; exclude_keywords?: string[] };
 };
 
 export type LatestRun = {
@@ -313,6 +333,7 @@ export const api = {
   subscribeSource: (id: string) => request<{ source_id: string; subscribed: boolean }>(`/api/subscriptions/${id}`, { method: "POST" }),
   unsubscribeSource: (id: string) => request<{ source_id: string; subscribed: boolean }>(`/api/subscriptions/${id}`, { method: "DELETE" }),
   patchSource: (id: string, body: Partial<Source>) => request<Source>(`/api/sources/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  patchSourceDefinition: (id: string, body: SourceDefinitionPatchInput) => request<Source>(`/api/source-definitions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   createSource: (body: SourceDefinitionInput) => request<Source>("/api/source-definitions", { method: "POST", body: JSON.stringify(body) }),
   fetchSource: (id: string) => request<{ job_id: number; status: string }>(`/api/sources/${id}/fetch`, { method: "POST" }),
   previewSource: (body: Record<string, unknown>) => request<Record<string, unknown>>("/api/sources/preview", { method: "POST", body: JSON.stringify(body) }),
