@@ -978,6 +978,7 @@ textarea {
   justify-content: flex-end;
   align-items: center;
   gap: 8px;
+  max-width: 100%;
 }
 
 .sourceGroup {
@@ -1008,9 +1009,9 @@ textarea {
 
 .sourceHeader {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(250px, 360px);
-  align-items: start;
-  gap: 12px;
+  grid-template-columns: minmax(260px, 1fr) minmax(340px, 430px);
+  align-items: center;
+  gap: 16px;
   min-width: 0;
 }
 
@@ -1027,9 +1028,16 @@ textarea {
 }
 
 .sourceDetails {
+  display: grid;
+  align-items: start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sourcePillGroup {
   display: flex;
-  align-items: center;
   flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
   min-width: 0;
 }
@@ -1065,18 +1073,30 @@ textarea {
   padding-inline: 2px;
 }
 
+.sourceCadence {
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .monoValue {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
 }
 
 .sourceRunStatus {
   display: grid;
-  gap: 7px;
+  align-self: center;
+  gap: 8px;
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: #f8fafc;
-  padding: 10px 12px;
+  padding: 12px 14px;
 }
 
 .sourceRunStatus.good {
@@ -1094,15 +1114,15 @@ textarea {
   background: #fff6f4;
 }
 
-.sourceRunHead,
-.sourceRunBody {
-  display: flex;
+.sourceRunMetric,
+.sourceRunResult {
+  display: grid;
   align-items: center;
   min-width: 0;
 }
 
-.sourceRunHead {
-  justify-content: space-between;
+.sourceRunMetric {
+  grid-template-columns: 86px minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -1110,19 +1130,24 @@ textarea {
   color: var(--muted);
   font-size: 10px;
   font-weight: 850;
+  line-height: 1.1;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
-.sourceRunTime {
+.sourceRunValue {
   overflow: hidden;
   color: #344456;
   font-size: 12px;
   font-weight: 800;
+  line-height: 1.2;
+  text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.sourceRunBody {
+.sourceRunResult {
+  grid-template-columns: auto auto minmax(0, auto) minmax(0, 1fr);
   gap: 7px;
   color: #25374d;
   font-size: 13px;
@@ -1160,6 +1185,22 @@ textarea {
 }
 
 .sourceRunState + .sourceRunDetail::before {
+  margin-right: 7px;
+  color: #a0adba;
+  content: "·";
+}
+
+.sourceRunNote {
+  overflow: hidden;
+  min-width: 0;
+  color: #087243;
+  font-size: 12px;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sourceRunDetail + .sourceRunNote::before {
   margin-right: 7px;
   color: #a0adba;
   content: "·";
@@ -1791,6 +1832,7 @@ textarea {
 .metricRow {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 12px;
   padding: 14px;
 }
@@ -1825,6 +1867,83 @@ textarea {
   padding: 12px;
   font-size: 12px;
   line-height: 1.5;
+}
+
+@media (max-width: 1500px) {
+  .sourceRow {
+    grid-template-columns: 1fr;
+  }
+
+  .sourceActions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 640px) {
+  .sourceRow {
+    overflow: hidden;
+    padding: 12px;
+  }
+
+  .sourceHeader,
+  .sourceTitleBlock,
+  .sourceRunStatus,
+  .sourceActions {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .sourceActions {
+    display: grid;
+    grid-template-columns: 1fr;
+    justify-items: start;
+  }
+
+  .sourceActions .button,
+  .sourceSwitch {
+    width: auto;
+  }
+
+  .sourceSwitch.enabled .switchKnob {
+    right: 4px;
+    left: auto;
+    transform: none;
+  }
+
+  .sourceCadence {
+    white-space: normal;
+  }
+
+  .sourceRunStatus {
+    padding: 10px;
+  }
+
+  .sourceRunMetric {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .sourceRunValue {
+    text-align: left;
+  }
+
+  .sourceRunResult {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .sourceRunDetail {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .sourceRunNote {
+    flex-basis: 100%;
+    padding-left: 15px;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
 }
 
 @media (max-width: 900px) {

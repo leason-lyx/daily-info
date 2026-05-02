@@ -116,6 +116,9 @@ class SourceDefinitionOut(SourceDefinitionIn):
     subscribed: bool = False
     runtime: SourceRuntimeOut | None = None
     latest_run: dict[str, Any] | None = None
+    latest_item_published_at: datetime | None = None
+    latest_item_ingested_at: datetime | None = None
+    latest_item_title: str = ""
     content_audit: dict[str, Any] = Field(default_factory=dict)
     spec_hash: str = ""
     catalog_file: str = ""

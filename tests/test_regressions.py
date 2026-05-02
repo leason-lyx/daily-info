@@ -1266,6 +1266,76 @@ def test_catalog_sources_are_opt_in_subscriptions(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_source_definitions_expose_latest_item_freshness(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from datetime import datetime, timezone
+
+        from app.db import SessionLocal, init_db
+        from app.models import Item, ItemSource, Source, SourceAttempt, SourceRun
+        from app.services import list_source_definitions
+
+        init_db()
+        with SessionLocal() as db:
+            db.add_all([
+                Source(id="primary", name="Primary", content_type="blog", platform="origin"),
+                Source(id="secondary", name="Secondary", content_type="blog", platform="mirror"),
+            ])
+            db.flush()
+            db.add_all([
+                SourceAttempt(source_id="primary", adapter="feed", url="https://example.com/feed.xml"),
+                SourceAttempt(source_id="secondary", adapter="feed", url="https://mirror.example.com/feed.xml"),
+                SourceRun(source_id="primary", status="succeeded", raw_count=10, item_count=1),
+                SourceRun(source_id="secondary", status="succeeded", raw_count=10, item_count=0),
+            ])
+            older = Item(
+                source_id="primary",
+                canonical_url="https://example.com/old",
+                title="Older item",
+                url="https://example.com/old",
+                content_type="blog",
+                platform="origin",
+                source_name="Primary",
+                published_at=datetime(2026, 4, 30, 8, tzinfo=timezone.utc),
+                created_at=datetime(2026, 4, 30, 9, tzinfo=timezone.utc),
+            )
+            shared = Item(
+                source_id="primary",
+                canonical_url="https://example.com/shared",
+                title="Shared latest item",
+                url="https://example.com/shared",
+                content_type="blog",
+                platform="origin",
+                source_name="Primary",
+                published_at=datetime(2026, 5, 2, 8, tzinfo=timezone.utc),
+                created_at=datetime(2026, 5, 2, 9, tzinfo=timezone.utc),
+            )
+            db.add_all([older, shared])
+            db.flush()
+            db.add_all([
+                ItemSource(item_id=older.id, source_id="primary", source_name="Primary", url=older.url, canonical_url=older.canonical_url),
+                ItemSource(item_id=shared.id, source_id="primary", source_name="Primary", url=shared.url, canonical_url=shared.canonical_url),
+                ItemSource(item_id=shared.id, source_id="secondary", source_name="Secondary", url="https://mirror.example.com/shared", canonical_url="https://mirror.example.com/shared"),
+            ])
+            db.commit()
+
+            definitions = {definition.id: definition for definition in list_source_definitions(db)}
+            def as_utc(value):
+                return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
+            assert definitions["primary"].latest_item_title == "Shared latest item"
+            assert as_utc(definitions["primary"].latest_item_published_at) == datetime(2026, 5, 2, 8, tzinfo=timezone.utc)
+            assert as_utc(definitions["primary"].latest_item_ingested_at) == datetime(2026, 5, 2, 9, tzinfo=timezone.utc)
+            assert definitions["secondary"].latest_item_title == "Shared latest item"
+            assert as_utc(definitions["secondary"].latest_item_published_at) == datetime(2026, 5, 2, 8, tzinfo=timezone.utc)
+            assert as_utc(definitions["secondary"].latest_item_ingested_at) == datetime(2026, 5, 2, 9, tzinfo=timezone.utc)
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "source-definition-freshness.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_source_definition_patch_writes_yaml_and_syncs_database(tmp_path: Path) -> None:
     catalog_dir = tmp_path / "catalog"
     source_yaml = """

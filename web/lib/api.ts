@@ -56,6 +56,9 @@ export type Source = {
   tagging: SourceTagging;
   auth: Record<string, unknown>;
   runtime?: SourceRuntime | null;
+  latest_item_published_at?: string | null;
+  latest_item_ingested_at?: string | null;
+  latest_item_title?: string;
   spec_hash?: string;
   catalog_file?: string;
   fulltext: Record<string, unknown>;
