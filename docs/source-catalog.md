@@ -18,7 +18,7 @@ config/sources/
 
 每个 YAML 文件包含一组 source definitions。应用启动时会同步这些定义到数据库。同步不会把未订阅 source 自动加入默认 feed。
 
-`/sources` 页面可以编辑低风险 source 配置。保存时后端会先更新对应 YAML 文件，再把同一份 definition 同步到数据库，避免“网页显示值”和“下次启动同步值”分裂。网页新建的 custom source 会写入 `config/sources/custom.yaml`。
+`/sources` 页面可以编辑低风险 source 配置，并展示最近抓取时间、最新内容发布时间和本次抓取新增数量。保存时后端会先更新对应 YAML 文件，再把同一份 definition 同步到数据库，避免“网页显示值”和“下次启动同步值”分裂。网页新建的 custom source 会写入 `config/sources/custom.yaml`。
 
 ## Source Definition 字段
 

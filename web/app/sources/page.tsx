@@ -483,41 +483,61 @@ function SourceMetadata({ source }: { source: Source }) {
   const fetchInterval = source.fetch?.interval_seconds || source.poll_interval;
   return (
     <div className="sourceDetails">
-      <span className="sourcePill strong">{source.kind || source.content_type}</span>
-      {source.platform ? <span className="sourcePill">{source.platform}</span> : null}
-      <span className="sourcePill">{sourceGroupName(source)}</span>
-      <span className="sourcePill quiet">{formatFetchInterval(fetchInterval)}</span>
-      <span className="sourcePill quiet">{summary}</span>
+      <div className="sourcePillGroup">
+        <span className="sourcePill strong">{source.kind || source.content_type}</span>
+        {source.platform ? <span className="sourcePill">{source.platform}</span> : null}
+        <span className="sourcePill">{sourceGroupName(source)}</span>
+      </div>
+      <span className="sourceCadence">{formatFetchInterval(fetchInterval)} · {summary}</span>
     </div>
   );
 }
 
 function SourceRunStatus({ source }: { source: Source }) {
-  const latest = latestRunParts(source.latest_run, source.runtime);
+  const latest = latestRunParts(source);
   return (
     <div className={`sourceRunStatus ${latest.tone}`} title={latest.title}>
-      <div className="sourceRunHead">
-        <span className="sourceRunLabel">Last run</span>
-        <span className="sourceRunTime">{latest.timeLabel}</span>
+      <div className="sourceRunMetric">
+        <span className="sourceRunLabel">Last fetch</span>
+        <span className="sourceRunValue" title={latest.fetchTitle}>{latest.fetchLabel}</span>
       </div>
-      <div className="sourceRunBody">
+      <div className="sourceRunMetric">
+        <span className="sourceRunLabel">Latest item</span>
+        <span className="sourceRunValue" title={latest.itemTitle}>{latest.itemLabel}</span>
+      </div>
+      <div className="sourceRunResult">
         <span className="statusDot" aria-hidden="true" />
         <span className="sourceRunState">{latest.status}</span>
-        <span className="sourceRunDetail">{latest.detail}</span>
+        <span className="sourceRunDetail">{latest.resultCount}</span>
+        {latest.resultNote && <span className="sourceRunNote">{latest.resultNote}</span>}
       </div>
       {latest.error && <span className="sourceRunError">{latest.error}</span>}
     </div>
   );
 }
 
-function latestRunParts(run: Record<string, unknown> | null | undefined, runtime: Source["runtime"]) {
+function latestRunParts(source: Source) {
+  const run = source.latest_run;
+  const runtime = source.runtime;
+  const itemPublishedAt = parseApiDate(source.latest_item_published_at || "");
+  const itemIngestedAt = parseApiDate(source.latest_item_ingested_at || "");
+  const itemDate = itemPublishedAt || itemIngestedAt;
+  const itemLabel = itemDate ? relativeTime(itemDate) : "No items yet";
+  const itemTitle = source.latest_item_title
+    ? `${source.latest_item_title}${itemDate ? ` · ${itemDate.toLocaleString()}` : ""}`
+    : "No items have been stored for this source yet.";
   if (!run) {
     const lastError = runtime?.last_error || "";
+    const lastRunDate = runtime?.last_run_at ? parseApiDate(runtime.last_run_at) : null;
     return {
       status: lastError ? "attention" : "never",
       tone: lastError ? "bad" : "warn",
-      detail: lastError ? `${runtime?.failure_count || 0} failures` : "No runs yet",
-      timeLabel: runtime?.last_run_at ? relativeTime(parseApiDate(runtime.last_run_at)) : "Never fetched",
+      resultCount: lastError ? `${runtime?.failure_count || 0} failures` : "No runs yet",
+      resultNote: "",
+      fetchLabel: lastRunDate ? relativeTime(lastRunDate) : "Never fetched",
+      fetchTitle: lastRunDate ? lastRunDate.toLocaleString() : "This source has not been fetched yet.",
+      itemLabel,
+      itemTitle,
       title: lastError || "This source has not been fetched yet.",
       error: truncate(lastError, 140),
     };
@@ -529,13 +549,22 @@ function latestRunParts(run: Record<string, unknown> | null | undefined, runtime
   const startedAt = typeof run.started_at === "string" ? run.started_at : "";
   const timestamp = finishedAt || startedAt;
   const runDate = parseApiDate(timestamp);
-  const tone = status === "succeeded" ? "good" : status === "failed" ? "bad" : "warn";
+  const tone = status === "succeeded" && rawCount > 0 ? "good" : status === "failed" ? "bad" : "warn";
   const errorMessage = typeof run.error_message === "string" ? run.error_message : "";
+  const resultNote = status === "succeeded" && rawCount > 0 && itemCount === 0
+    ? "No new items from upstream"
+    : status === "succeeded" && rawCount === 0
+      ? "No entries returned"
+      : "";
   return {
     status,
     tone,
-    detail: `${rawCount} fetched, ${itemCount} new`,
-    timeLabel: relativeTime(runDate),
+    resultCount: `${rawCount} fetched, ${itemCount} new`,
+    resultNote,
+    fetchLabel: relativeTime(runDate),
+    fetchTitle: runDate ? runDate.toLocaleString() : "No timestamp recorded.",
+    itemLabel,
+    itemTitle,
     title: runDate ? runDate.toLocaleString() : "No timestamp recorded.",
     error: status === "failed" ? truncate(errorMessage, 140) : "",
   };

@@ -88,6 +88,7 @@ def source_to_out(source: Source, latest_run: SourceRun | None = None) -> Source
 
 
 def source_definition_to_out(source: Source, latest_run: SourceRun | None = None, stats: dict[str, Any] | None = None) -> SourceDefinitionOut:
+    stats = stats or {}
     definition = definition_from_source(source)
     subscription = source.subscription
     runtime = source.runtime
@@ -117,6 +118,9 @@ def source_definition_to_out(source: Source, latest_run: SourceRun | None = None
         if runtime
         else None,
         latest_run=run_to_dict(latest_run) if latest_run else None,
+        latest_item_published_at=stats.get("latest_item_published_at"),
+        latest_item_ingested_at=stats.get("latest_item_ingested_at"),
+        latest_item_title=str(stats.get("latest_item_title") or ""),
         content_audit=content_audit_for_source(source, latest_run, stats),
         spec_hash=source.spec_hash,
         catalog_file=source.catalog_file,
@@ -599,7 +603,56 @@ def source_content_stats(db: Session) -> dict[str, dict[str, Any]]:
             bucket["detail_count"] = int(count or 0)
         elif extractor == "feed_field":
             bucket["feed_count"] = int(count or 0)
+    for source_id, latest in source_latest_item_stats(db).items():
+        bucket = stats.setdefault(
+            source_id,
+            {
+                "item_count": 0,
+                "avg_summary_len": 0.0,
+                "avg_raw_len": 0.0,
+                "min_raw_len": 0,
+                "max_raw_len": 0,
+                "feed_count": 0,
+                "detail_count": 0,
+            },
+        )
+        bucket.update(latest)
     return stats
+
+
+def source_latest_item_stats(db: Session) -> dict[str, dict[str, Any]]:
+    ranked = (
+        select(
+            ItemSource.source_id.label("source_id"),
+            Item.published_at.label("latest_item_published_at"),
+            Item.created_at.label("latest_item_ingested_at"),
+            Item.title.label("latest_item_title"),
+            func.row_number()
+            .over(
+                partition_by=ItemSource.source_id,
+                order_by=(Item.published_at.desc().nullslast(), Item.created_at.desc(), Item.id.desc()),
+            )
+            .label("rank"),
+        )
+        .join(Item, Item.id == ItemSource.item_id)
+        .subquery()
+    )
+    rows = db.execute(
+        select(
+            ranked.c.source_id,
+            ranked.c.latest_item_published_at,
+            ranked.c.latest_item_ingested_at,
+            ranked.c.latest_item_title,
+        ).where(ranked.c.rank == 1)
+    ).all()
+    return {
+        source_id: {
+            "latest_item_published_at": latest_item_published_at,
+            "latest_item_ingested_at": latest_item_ingested_at,
+            "latest_item_title": latest_item_title or "",
+        }
+        for source_id, latest_item_published_at, latest_item_ingested_at, latest_item_title in rows
+    }
 
 
 def source_summary_stats(db: Session) -> dict[str, dict[str, int]]:
