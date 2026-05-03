@@ -34,6 +34,11 @@ sources:
       strategy: first_success
       interval_seconds: 3600
       attempts:
+        - adapter: page_index
+          url: https://openai.com/research/
+          timeout_seconds: 20
+          limit: 20
+          reader_fallback: true
         - adapter: rsshub
           route: /openai/research?limit=20
           timeout_seconds: 12
@@ -58,6 +63,10 @@ sources:
       strategy: first_success
       interval_seconds: 3600
       attempts:
+        - adapter: page_index
+          url: https://www.anthropic.com/news
+          timeout_seconds: 20
+          limit: 20
         - adapter: rsshub
           route: /anthropic/news?limit=20
           timeout_seconds: 12
@@ -82,6 +91,10 @@ sources:
       strategy: first_success
       interval_seconds: 3600
       attempts:
+        - adapter: page_index
+          url: https://www.anthropic.com/research
+          timeout_seconds: 20
+          limit: 20
         - adapter: rsshub
           route: /anthropic/research?limit=20
           timeout_seconds: 12
@@ -106,6 +119,10 @@ sources:
       strategy: first_success
       interval_seconds: 3600
       attempts:
+        - adapter: page_index
+          url: https://www.anthropic.com/engineering
+          timeout_seconds: 20
+          limit: 20
         - adapter: rsshub
           route: /anthropic/engineering?limit=20
           timeout_seconds: 12

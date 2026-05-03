@@ -1690,6 +1690,124 @@ def test_html_index_adapter_uses_timeout_config(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_page_index_adapter_parses_reader_fallback_dates(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        import httpx
+
+        from app.adapters import PageIndexAdapter
+        from app.models import SourceAttempt
+        from app.utils import dumps
+
+        markdown = '''
+        [A new class of intelligence for real work Release Apr 23, 2026 12 min read](https://openai.com/index/introducing-gpt-5-5/)
+        [Our most capable and efficient frontier model for professional work Release Mar 5, 2026 16 min read](https://openai.com/index/introducing-gpt-5-4/)
+        '''
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def get(self, url, headers=None):
+                request = httpx.Request("GET", url)
+                if url == "https://openai.com/research/":
+                    return httpx.Response(403, text="blocked", request=request)
+                if url.startswith("https://r.jina.ai/"):
+                    return httpx.Response(200, text=markdown, request=request)
+                raise AssertionError(url)
+
+        attempt = SourceAttempt(
+            adapter="page_index",
+            url="https://openai.com/research/",
+            config=dumps({"reader_fallback": True, "limit": 3}),
+        )
+
+        with patch("app.adapters.httpx.AsyncClient", FakeAsyncClient):
+            result = asyncio.run(PageIndexAdapter().fetch(attempt, settings=None))
+
+        assert result.entries[0].title == "A new class of intelligence for real work"
+        assert result.entries[0].url == "https://openai.com/index/introducing-gpt-5-5/"
+        assert result.entries[0].published_at.isoformat().startswith("2026-04-23")
+        assert result.warnings == ["Used reader fallback for blocked index page."]
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "page-index-reader.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_page_index_adapter_fills_anthropic_featured_date_from_detail(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        import httpx
+
+        from app.adapters import PageIndexAdapter
+        from app.models import SourceAttempt
+        from app.utils import dumps
+
+        index_html = '''
+        <main>
+          <a href="/engineering/april-23-postmortem">Featured An update on recent Claude Code quality reports We traced recent reports.</a>
+          <a href="/engineering/managed-agents">Scaling Managed Agents: Decoupling the brain from the hands Apr 08, 2026</a>
+        </main>
+        '''
+        detail_html = '''
+        <main>
+          <h1>An update on recent Claude Code quality reports</h1>
+          <p>Published Apr 23, 2026</p>
+        </main>
+        '''
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def get(self, url, headers=None):
+                request = httpx.Request("GET", url)
+                if url == "https://www.anthropic.com/engineering":
+                    return httpx.Response(200, text=index_html, request=request)
+                if url == "https://www.anthropic.com/engineering/april-23-postmortem":
+                    return httpx.Response(200, text=detail_html, request=request)
+                raise AssertionError(url)
+
+        attempt = SourceAttempt(
+            adapter="page_index",
+            url="https://www.anthropic.com/engineering",
+            config=dumps({"limit": 5}),
+        )
+
+        with patch("app.adapters.httpx.AsyncClient", FakeAsyncClient):
+            result = asyncio.run(PageIndexAdapter().fetch(attempt, settings=None))
+
+        assert result.entries[0].title == "An update on recent Claude Code quality reports"
+        assert result.entries[0].published_at.isoformat().startswith("2026-04-23")
+        assert result.entries[1].title == "Scaling Managed Agents: Decoupling the brain from the hands"
+        assert result.entries[1].published_at.isoformat().startswith("2026-04-08")
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "page-index-anthropic.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_user_owned_arxiv_cs_cl_attempt_is_not_overwritten(tmp_path: Path) -> None:
     result = run_python(
         """

@@ -232,6 +232,7 @@ def attempt_model(data: FetchAttemptIn, index: int) -> SourceAttempt:
         "timeout_seconds": data.timeout_seconds,
         "selectors": data.selectors,
         "limit": data.limit,
+        "reader_fallback": data.reader_fallback,
     }
     return SourceAttempt(
         kind="rsshub" if data.adapter == "rsshub" else "direct",
