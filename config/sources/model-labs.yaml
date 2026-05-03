@@ -12,9 +12,9 @@ sources:
       strategy: first_success
       interval_seconds: 3600
       attempts:
-        - adapter: rsshub
-          route: /openai/news?limit=20
-          timeout_seconds: 12
+        - adapter: feed
+          url: https://openai.com/news/rss.xml
+          timeout_seconds: 30
     fulltext:
       mode: feed_only
     summary:

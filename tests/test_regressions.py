@@ -1266,6 +1266,28 @@ def test_catalog_sources_are_opt_in_subscriptions(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_openai_news_uses_full_official_rss_feed(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from app.source_catalog import load_source_catalog
+
+        definitions = {definition.id: definition for definition, _ in load_source_catalog()}
+        openai_news = definitions["openai-news"]
+        attempts = openai_news.fetch.attempts
+
+        assert len(attempts) == 1
+        assert attempts[0].adapter == "feed"
+        assert attempts[0].url == "https://openai.com/news/rss.xml"
+        assert attempts[0].route == ""
+        assert attempts[0].timeout_seconds == 30
+        assert "limit=20" not in attempts[0].url
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "openai-news-full-rss.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_source_definitions_expose_latest_item_freshness(tmp_path: Path) -> None:
     result = run_python(
         """
