@@ -60,7 +60,7 @@ export default function NewSourcePage() {
       fetch: {
         strategy: "first_success",
         interval_seconds: 3600,
-        attempts: [{ adapter: adapter as "feed" | "rsshub" | "html_index", url, route, timeout_seconds: 20 }],
+        attempts: [{ adapter: adapter as "feed" | "rsshub" | "html_index" | "page_index", url, route, timeout_seconds: 20 }],
       },
       fulltext: { mode: contentType === "blog" ? "detail_only" : "feed_only", max_detail_pages_per_run: 20 },
       summary: { auto: contentType !== "paper", window_days: 7 },
@@ -103,6 +103,7 @@ export default function NewSourcePage() {
               <option value="feed">RSS / Atom</option>
               <option value="rsshub">RSSHub</option>
               <option value="html_index">HTML fallback</option>
+              <option value="page_index">Page index</option>
             </select>
           </div>
           <div className="field">

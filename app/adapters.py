@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+import re
 from typing import Protocol
 from typing import Any
 from urllib.parse import urljoin
@@ -13,6 +14,31 @@ from app.utils import loads, parse_datetime
 
 
 RSSHUB_TIMEOUT_SECONDS = 45
+MONTH_DATE_RE = re.compile(
+    r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},\s+\d{4}\b",
+    re.IGNORECASE,
+)
+MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\((https?://[^)]+)\)")
+INDEX_LABELS = {
+    "announcements",
+    "company",
+    "economic research",
+    "engineering",
+    "featured",
+    "global affairs",
+    "ai adoption",
+    "interpretability",
+    "milestone",
+    "policy",
+    "product",
+    "publication",
+    "release",
+    "research",
+    "safety",
+    "science",
+    "security",
+    "societal impacts",
+}
 
 
 @dataclass
@@ -157,6 +183,165 @@ async def fetch_html_index(url: str, timeout: int = 20) -> AdapterResult:
     return AdapterResult(entries=entries, warnings=["HTML index fallback has lower field fidelity."], used_url=url)
 
 
+def _reader_url(url: str) -> str:
+    return f"https://r.jina.ai/http://r.jina.ai/http://{url}"
+
+
+def _published_date(text: str) -> Any:
+    match = MONTH_DATE_RE.search(text)
+    return parse_datetime(match.group(0)) if match else None
+
+
+def _clean_index_title(text: str) -> str:
+    text = " ".join(text.split())
+    date_match = MONTH_DATE_RE.search(text)
+    if not date_match:
+        return _drop_leading_labels(text)
+
+    if date_match.start() <= 8:
+        title = text[date_match.end() :].strip()
+    else:
+        title = text[: date_match.start()].strip()
+    title = re.sub(r"\b\d+\s+min\s+read\b.*$", "", title, flags=re.IGNORECASE).strip()
+    title = _drop_leading_labels(_drop_trailing_labels(title))
+    return title or text
+
+
+def _drop_leading_labels(text: str) -> str:
+    current = text.strip(" -:|")
+    for label in sorted(INDEX_LABELS, key=len, reverse=True):
+        if current.lower() == label:
+            return ""
+        prefix = f"{label} "
+        if current.lower().startswith(prefix):
+            return current[len(prefix) :].strip(" -:|")
+    return current
+
+
+def _drop_trailing_labels(text: str) -> str:
+    current = text.strip(" -:|")
+    lowered = current.lower()
+    for label in sorted(INDEX_LABELS, key=len, reverse=True):
+        suffix = f" {label}"
+        if lowered == label:
+            return ""
+        if lowered.endswith(suffix):
+            return current[: -len(suffix)].strip(" -:|")
+    return current
+
+
+def _is_article_url(url: str) -> bool:
+    if any(segment in url for segment in ["/research/index", "/research/team/", "/careers/", "/safety/"]):
+        return False
+    return any(segment in url for segment in ["/index/", "/news/", "/research/", "/engineering/", "/features/", "/glasswing", "/81k-interviews"])
+
+
+def _entries_from_html_index(body: str, base_url: str, limit: int) -> list[RawEntryData]:
+    soup = BeautifulSoup(body, "html.parser")
+    entries: list[RawEntryData] = []
+    seen: set[str] = set()
+    for anchor in soup.select("main a[href], article a[href]"):
+        text = anchor.get_text(" ", strip=True)
+        href = anchor.get("href")
+        if not text or not href:
+            continue
+        url_abs = urljoin(base_url, href)
+        if url_abs in seen or not _is_article_url(url_abs):
+            continue
+        title = _clean_index_title(text)
+        if not title or len(title) < 8:
+            continue
+        seen.add(url_abs)
+        entries.append(
+            RawEntryData(
+                title=title,
+                url=url_abs,
+                published_at=_published_date(text),
+                summary="",
+                content="",
+                raw_payload={"source": "page_index", "index_text": " ".join(text.split())},
+            )
+        )
+        if len(entries) >= limit:
+            break
+    return entries
+
+
+def _entries_from_markdown_index(body: str, base_url: str, limit: int) -> list[RawEntryData]:
+    entries: list[RawEntryData] = []
+    seen: set[str] = set()
+    for match in MARKDOWN_LINK_RE.finditer(body):
+        text = match.group(1)
+        url_abs = urljoin(base_url, match.group(2))
+        if url_abs in seen or not _is_article_url(url_abs):
+            continue
+        title = _clean_index_title(text)
+        if not title or len(title) < 8:
+            continue
+        seen.add(url_abs)
+        entries.append(
+            RawEntryData(
+                title=title,
+                url=url_abs,
+                published_at=_published_date(text),
+                raw_payload={"source": "page_index_reader", "index_text": " ".join(text.split())},
+            )
+        )
+        if len(entries) >= limit:
+            break
+    return entries
+
+
+async def _fill_missing_page_dates(entries: list[RawEntryData], client: httpx.AsyncClient, timeout_limit: int = 5) -> None:
+    checked = 0
+    for entry in entries:
+        if entry.published_at or checked >= timeout_limit:
+            continue
+        checked += 1
+        try:
+            response = await client.get(entry.url, headers={"User-Agent": "daily-info/0.1"})
+        except httpx.HTTPError:
+            continue
+        if response.status_code >= 400:
+            continue
+        soup = BeautifulSoup(response.text, "html.parser")
+        title = soup.find("h1")
+        if title:
+            cleaned_title = title.get_text(" ", strip=True)
+            if cleaned_title:
+                entry.title = cleaned_title
+        text = soup.get_text(" ", strip=True)
+        published_match = re.search(r"\bPublished\s+(" + MONTH_DATE_RE.pattern[2:-2] + r")", text, flags=re.IGNORECASE)
+        if published_match:
+            entry.published_at = parse_datetime(published_match.group(1))
+        elif not entry.published_at:
+            entry.published_at = _published_date(text[:800])
+
+
+async def fetch_page_index(url: str, timeout: int = 20, limit: int = 20, reader_fallback: bool = False) -> AdapterResult:
+    warnings: list[str] = []
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        response = await client.get(url, headers={"User-Agent": "daily-info/0.1"})
+        if response.status_code >= 400 and reader_fallback:
+            reader = _reader_url(url)
+            response = await client.get(reader, headers={"User-Agent": "daily-info/0.1"})
+            if response.status_code >= 400:
+                raise AdapterError("http_error", f"GET {reader} returned {response.status_code}")
+            entries = _entries_from_markdown_index(response.text, url, limit)
+            warnings.append("Used reader fallback for blocked index page.")
+            used_url = reader
+        else:
+            if response.status_code >= 400:
+                raise AdapterError("http_error", f"GET {url} returned {response.status_code}")
+            entries = _entries_from_html_index(response.text, str(response.url), limit)
+            used_url = str(response.url)
+        await _fill_missing_page_dates(entries, client)
+    if not entries:
+        raise AdapterError("empty_page_index", f"No article links found in {url}")
+    entries.sort(key=lambda entry: entry.published_at or parse_datetime("1970-01-01"), reverse=True)
+    return AdapterResult(entries=entries[:limit], warnings=warnings, used_url=used_url)
+
+
 class FeedAdapter:
     async def fetch(self, attempt: SourceAttempt, settings: Settings) -> AdapterResult:
         config = loads(attempt.config, {})
@@ -192,10 +377,20 @@ class HtmlIndexAdapter:
         return await fetch_html_index(attempt.url, timeout=timeout)
 
 
+class PageIndexAdapter:
+    async def fetch(self, attempt: SourceAttempt, settings: Settings) -> AdapterResult:
+        config = loads(attempt.config, {})
+        timeout = int(config.get("timeout_seconds", config.get("timeout", 20)))
+        limit = int(config.get("limit", 20))
+        reader_fallback = bool(config.get("reader_fallback", False))
+        return await fetch_page_index(attempt.url, timeout=timeout, limit=limit, reader_fallback=reader_fallback)
+
+
 ADAPTERS: dict[str, Adapter] = {
     "feed": FeedAdapter(),
     "rsshub": RsshubAdapter(),
     "html_index": HtmlIndexAdapter(),
+    "page_index": PageIndexAdapter(),
 }
 
 
@@ -217,6 +412,10 @@ async def preview_source(url: str | None, route: str | None, adapter: str, setti
         if not url:
             raise AdapterError("missing_url", "URL is required for HTML preview")
         return await fetch_html_index(url, timeout=timeout_seconds)
+    if adapter == "page_index":
+        if not url:
+            raise AdapterError("missing_url", "URL is required for page index preview")
+        return await fetch_page_index(url, timeout=timeout_seconds, reader_fallback=True)
     if not url:
         raise AdapterError("missing_url", "URL is required")
     feed_url, discover_warnings = await discover_feed(url)

@@ -52,6 +52,7 @@ config/sources/
 - `feed`：标准 RSS/Atom。
 - `rsshub`：RSSHub route 或 RSSHub URL。
 - `html_index`：没有 feed 时的 HTML 列表页 fallback。
+- `page_index`：官方列表页解析，提取文章链接和发布时间；适合 RSSHub route 漏项或上游无专用 feed 的 source。
 
 attempt 可以配置：
 
@@ -60,6 +61,7 @@ attempt 可以配置：
 - `timeout_seconds`
 - `selectors`
 - `limit`
+- `reader_fallback`：`page_index` 可用；当官方页面阻止普通 HTTP 抓取时，通过 reader fallback 获取页面文本。
 
 ## Fulltext Policy
 
