@@ -1127,6 +1127,15 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
             db.add(raw)
             db.flush()
         item = db.execute(select(Item).where(Item.dedupe_key == dedupe_key)).scalar_one_or_none()
+        if not item and item_canonical:
+            item = db.execute(
+                select(Item).where(
+                    Item.source_id == source.id,
+                    Item.canonical_url == item_canonical,
+                )
+            ).scalar_one_or_none()
+            if item:
+                item.dedupe_key = dedupe_key
         entry_summary = strip_html(entry.summary)
         raw_text = strip_html(entry.content or entry.summary)
         provisional_tags = _tags_from_available_values(default_tags, getattr(entry, "tags", []), tagging, [])

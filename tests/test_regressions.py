@@ -707,6 +707,60 @@ def test_persist_entries_deduplicates_tracking_urls_and_preserves_user_state(tmp
     assert result.stdout.strip() == "ok"
 
 
+def test_persist_entries_recovers_legacy_source_url_dedupe_key(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+        from datetime import datetime, timezone
+
+        from sqlalchemy import func, select
+
+        from app.adapters import RawEntryData
+        from app.config import get_settings
+        from app.db import SessionLocal, init_db
+        from app.models import Item, Source
+        from app.services import persist_entries
+
+        init_db()
+        settings = get_settings()
+        with SessionLocal() as db:
+            source = Source(id="legacy-source", name="Legacy Source", content_type="blog", platform="example")
+            existing = Item(
+                source_id="legacy-source",
+                dedupe_key="legacy:old-item",
+                canonical_url="https://example.com/news/launch",
+                title="Old title",
+                url="https://example.com/news/launch",
+                content_type="blog",
+                platform="example",
+                source_name="Legacy Source",
+                summary="Old summary",
+                raw_text="Old text",
+            )
+            db.add_all([source, existing])
+            db.commit()
+
+            entry = RawEntryData(
+                title="Launch Notes",
+                url="https://example.com/news/launch?utm_source=newsletter",
+                published_at=datetime(2026, 4, 20, tzinfo=timezone.utc),
+                summary="Fresh summary",
+                content="Fresh full text",
+            )
+
+            assert asyncio.run(persist_entries(db, source, [entry], settings))[1] == 0
+            assert db.execute(select(func.count()).select_from(Item)).scalar_one() == 1
+            item = db.execute(select(Item)).scalar_one()
+            assert item.id == existing.id
+            assert item.dedupe_key.startswith("url:")
+            assert item.raw_text == "Fresh full text"
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "legacy-url-dedupe.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_persist_entries_uses_feed_tagging_mode_and_filters_noise(tmp_path: Path) -> None:
     result = run_python(
         """
