@@ -50,7 +50,7 @@ config/sources/
 支持的 adapter：
 
 - `feed`：标准 RSS/Atom。
-- `rsshub`：RSSHub route 或 RSSHub URL。
+- `rsshub`：RSSHub route 或 RSSHub URL；X/Twitter 用户时间线可使用 [`/twitter/user/:id/:routeParams?`](https://docs.rsshub.app/routes/popular)，例如 `includeRts=0` 排除 retweets。
 - `html_index`：没有 feed 时的 HTML 列表页 fallback。
 - `page_index`：官方列表页解析，提取文章链接和发布时间；适合 RSSHub route 漏项或上游无专用 feed 的 source。
 
@@ -112,6 +112,8 @@ Source catalog 不能包含真实 secret 值。
 - 个人账号凭据
 
 如果未来某个 source 需要认证，catalog 中只保存 `secret_ref` 这样的引用名，真实 secret 放在 `.env`、settings 或其他运行时 secret store。
+
+公共 RSSHub 实例可免费尝试 X/Twitter route，但稳定性不保证。如果以后改用自建 RSSHub 提高 X route 可用性，按 RSSHub 官方建议配置 `TWITTER_AUTH_TOKEN`，并继续把真实 cookie/token 保存在运行时环境中，不写入 source catalog。
 
 网页编辑也遵守同一规则：不要在 source 的标签、过滤词、URL、metadata 或 auth 字段里保存真实 secret。
 

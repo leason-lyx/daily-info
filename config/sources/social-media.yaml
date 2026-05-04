@@ -1,0 +1,29 @@
+schema_version: 1
+sources:
+  - id: x-thsottiaux
+    title: X - Tibo
+    kind: post
+    platform: x
+    homepage: https://x.com/thsottiaux
+    group: Social Media
+    language: en
+    tags: [x, ai]
+    fetch:
+      strategy: first_success
+      interval_seconds: 1800
+      attempts:
+        - adapter: rsshub
+          route: /twitter/user/thsottiaux/readable=1&includeRts=0&count=20
+          limit: 20
+          timeout_seconds: 20
+    fulltext:
+      mode: feed_only
+    summary:
+      auto: true
+      window_days: 7
+    tagging:
+      mode: llm
+      max_tags: 5
+    auth:
+      mode: none
+    stability: stable

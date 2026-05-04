@@ -154,6 +154,26 @@ def test_fetch_feed_parses_entry_categories_as_tags(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_fetch_attempt_schema_rejects_x_user_adapter(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from pydantic import ValidationError
+
+        from app.schemas import FetchAttemptIn
+
+        try:
+            FetchAttemptIn(adapter="x_user", route="thsottiaux")
+        except ValidationError:
+            pass
+        else:
+            raise AssertionError("x_user should not be an accepted fetch adapter")
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "x-user-schema.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_tag_sanitizer_filters_layout_class_noise() -> None:
     result = run_python(
         """
@@ -1284,6 +1304,30 @@ def test_openai_news_uses_full_official_rss_feed(tmp_path: Path) -> None:
         print("ok")
         """,
         sqlite_url(tmp_path / "openai-news-full-rss.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_tibo_x_source_uses_rsshub_route(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from app.source_catalog import load_source_catalog
+
+        definitions = {definition.id: definition for definition, _ in load_source_catalog()}
+        source = definitions["x-thsottiaux"]
+        attempt = source.fetch.attempts[0]
+
+        assert source.kind == "post"
+        assert source.platform == "x"
+        assert source.group == "Social Media"
+        assert source.auth.mode == "none"
+        assert source.auth.secret_ref == ""
+        assert attempt.adapter == "rsshub"
+        assert attempt.route == "/twitter/user/thsottiaux/readable=1&includeRts=0&count=20"
+        assert attempt.limit == 20
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "tibo-x-source.db"),
     )
     assert result.stdout.strip() == "ok"
 

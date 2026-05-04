@@ -83,6 +83,8 @@ Catalog 是显式订阅模式：
 
 Source definition 可以包含抓取方式、全文策略、摘要策略、过滤规则、标签、分组和元数据。它们应该被视为公开配置，不应包含 API key、cookie、token 或其他 secret；通过网页编辑时也必须遵守这一点。未来如果某个 source 需要认证，catalog 中只保存 secret 引用名，真实 secret 放在运行时配置里。
 
+X/Twitter 社交媒体 source 默认使用 RSSHub route，例如 [`/twitter/user/:id/:routeParams?`](https://docs.rsshub.app/routes/popular)。公共 RSSHub 实例可以免费尝试，但 X route 稳定性不保证；如果以后需要更稳定的 X 抓取，可以自建 RSSHub，并把官方推荐的 `TWITTER_AUTH_TOKEN` 配在 source catalog 之外。
+
 ## 本地开发
 
 宿主机本地开发请使用 `.env.local.example`。Docker 用的 `.env.example` 会把 SQLite 指向 `/data`，这个路径通常只在容器内存在。

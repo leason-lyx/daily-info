@@ -83,6 +83,8 @@ When the same content appears in multiple sources, Daily Info stores one item ke
 
 Source definition files may include fetch attempts, fulltext policy, summary policy, filters, tags, grouping, and metadata. They should not contain API keys, cookies, tokens, or other secrets, including when edited from the web UI. If a source eventually needs credentials, store only a secret reference in catalog metadata and keep the secret value in runtime configuration.
 
+X/Twitter social media sources use RSSHub routes such as [`/twitter/user/:id/:routeParams?`](https://docs.rsshub.app/routes/popular) by default. Public RSSHub instances keep this path free to try, but they may be less reliable for X routes. If a source needs more stable X access later, self-host RSSHub and configure its recommended `TWITTER_AUTH_TOKEN` outside the source catalog.
+
 ## Local Development
 
 Use `.env.local.example` for host-machine development. The Docker `.env.example` points SQLite at `/data`, which is usually only valid inside containers.

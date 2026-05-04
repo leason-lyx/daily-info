@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 
 from app.config import Settings
 from app.models import SourceAttempt
-from app.utils import loads, parse_datetime
+from app.utils import dumps, loads, parse_datetime
 
 
 RSSHUB_TIMEOUT_SECONDS = 45
