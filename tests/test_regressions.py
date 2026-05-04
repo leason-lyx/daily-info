@@ -1319,7 +1319,7 @@ def test_tibo_x_source_uses_rsshub_route(tmp_path: Path) -> None:
 
         assert source.kind == "post"
         assert source.platform == "x"
-        assert source.group == "Social Media"
+        assert source.group == "Personal Posts"
         assert source.auth.mode == "none"
         assert source.auth.secret_ref == ""
         assert attempt.adapter == "rsshub"
@@ -1328,6 +1328,34 @@ def test_tibo_x_source_uses_rsshub_route(tmp_path: Path) -> None:
         print("ok")
         """,
         sqlite_url(tmp_path / "tibo-x-source.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_simon_willison_source_uses_atom_feed(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from app.source_catalog import load_source_catalog
+
+        definitions = {definition.id: definition for definition, _ in load_source_catalog()}
+        source = definitions["simon-willison-blog"]
+        attempt = source.fetch.attempts[0]
+
+        assert source.kind == "blog"
+        assert source.platform == "simonwillison"
+        assert source.homepage == "https://simonwillison.net/"
+        assert source.group == "Personal Posts"
+        assert source.auth.mode == "none"
+        assert source.auth.secret_ref == ""
+        assert source.fulltext.mode == "feed_only"
+        assert source.summary.auto is True
+        assert source.tagging.mode == "llm"
+        assert attempt.adapter == "feed"
+        assert attempt.url == "https://simonwillison.net/atom/everything/"
+        assert attempt.timeout_seconds == 30
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "simon-willison-source.db"),
     )
     assert result.stdout.strip() == "ok"
 
