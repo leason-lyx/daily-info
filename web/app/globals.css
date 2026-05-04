@@ -2809,3 +2809,540 @@ textarea {
     padding-left: 18px;
   }
 }
+
+/* Visual direction polish pass: higher-fidelity atmosphere, motion, and responsive chrome. */
+.feedSurface {
+  position: relative;
+  isolation: isolate;
+}
+
+.feedSurface::after {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  content: "";
+}
+
+.feedSurface .pageHead,
+.feedSurface .toolbar,
+.feedSurface .stack > .item {
+  animation: surfaceRise 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.feedSurface .toolbar {
+  animation-delay: 70ms;
+}
+
+.feedSurface .stack > .item:nth-child(1) {
+  animation-delay: 130ms;
+}
+
+.feedSurface .stack > .item:nth-child(2) {
+  animation-delay: 190ms;
+}
+
+.feedSurface .stack > .item:nth-child(3) {
+  animation-delay: 250ms;
+}
+
+.feedSurface .stack > .item:nth-child(n + 4) {
+  animation-delay: 310ms;
+}
+
+.styleSwitcher {
+  align-self: stretch;
+  align-content: center;
+}
+
+.styleSwitch {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.styleSwitch::after {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  opacity: 0;
+  background: linear-gradient(120deg, transparent 0%, color-mix(in srgb, var(--accent) 14%, transparent) 46%, transparent 100%);
+  transform: translateX(-40%);
+  transition:
+    opacity 180ms ease,
+    transform 320ms ease;
+  content: "";
+}
+
+.styleSwitch:hover::after {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.styleSwitch:hover {
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+}
+
+.feedSurface--swiss::after {
+  background:
+    linear-gradient(90deg, rgba(17, 24, 32, 0.028) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(17, 24, 32, 0.024) 1px, transparent 1px);
+  background-size: 72px 72px;
+}
+
+.shell:has(.feedSurface--swiss) .sidebar {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(245, 246, 244, 0.96)),
+    #f8f8f6;
+}
+
+.shell:has(.feedSurface--swiss) .navItem {
+  border-radius: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.feedSurface--swiss .pageHead {
+  display: grid;
+  grid-template-columns: minmax(300px, 450px) minmax(0, 1fr);
+  gap: 32px;
+  align-items: end;
+  border-bottom: 2px solid #111820;
+}
+
+.feedSurface--swiss h1 {
+  max-width: 7.2ch;
+  font-size: 72px;
+  letter-spacing: 0;
+}
+
+.feedSurface--swiss .subtle {
+  max-width: 38ch;
+  margin-top: 12px;
+  color: #3f4b57;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.feedSurface--swiss .styleSwitcher {
+  border-left: 1px solid #111820;
+  padding-left: 14px;
+}
+
+.feedSurface--swiss .styleSwitch {
+  min-height: 72px;
+  border-color: #b9c2c8;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.feedSurface--swiss .styleSwitch.active {
+  border-color: #102334;
+  background: #102334;
+}
+
+.feedSurface--swiss .toolbar {
+  border-top-color: #111820;
+  border-bottom-color: #b8c0c6;
+}
+
+.feedSurface--swiss .item {
+  grid-template-columns: 64px minmax(0, 1fr);
+  padding: 28px 0;
+  transition:
+    background 160ms ease,
+    padding 180ms ease;
+}
+
+.feedSurface--swiss .item:hover {
+  background: rgba(255, 255, 255, 0.48);
+  padding-right: 14px;
+  padding-left: 14px;
+}
+
+.feedSurface--swiss .itemTop {
+  align-items: flex-start;
+  border-bottom: 1px solid rgba(20, 61, 90, 0.2);
+  padding-bottom: 12px;
+}
+
+.feedSurface--swiss .item h2 {
+  max-width: 25ch;
+  font-size: 31px;
+  letter-spacing: 0;
+}
+
+.feedSurface--swiss .badge.good {
+  border-color: #143d5a;
+  color: #143d5a;
+}
+
+.feedSurface--swiss .actions {
+  border-top: 1px solid rgba(20, 61, 90, 0.16);
+  padding-top: 10px;
+}
+
+.feedSurface--bento::after {
+  background:
+    radial-gradient(circle at 8% 12%, rgba(125, 211, 252, 0.24), transparent 28%),
+    radial-gradient(circle at 88% 8%, rgba(167, 139, 250, 0.18), transparent 30%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 34%);
+}
+
+.shell:has(.feedSurface--bento) .main {
+  padding-top: 30px;
+}
+
+.shell:has(.feedSurface--bento) .sidebar {
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.72);
+}
+
+.feedSurface--bento .pageHead {
+  position: relative;
+  overflow: hidden;
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.94), rgba(240, 249, 255, 0.76)),
+    rgba(255, 255, 255, 0.86);
+}
+
+.feedSurface--bento .pageHead::after {
+  position: absolute;
+  inset: auto 24px -48px auto;
+  width: 220px;
+  height: 120px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(45, 212, 191, 0.18), transparent 68%);
+  content: "";
+}
+
+.feedSurface--bento h1 {
+  font-size: 56px;
+  letter-spacing: 0;
+}
+
+.feedSurface--bento .styleSwitch,
+.feedSurface--bento .toolbar,
+.feedSurface--bento .sourceTypeGroup,
+.feedSurface--bento .item,
+.feedSurface--bento .aiSummary {
+  border-radius: 16px;
+}
+
+.feedSurface--bento .styleSwitch {
+  min-height: 72px;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
+}
+
+.feedSurface--bento .styleSwitch.active {
+  border-color: rgba(45, 212, 191, 0.5);
+  box-shadow: 0 18px 44px rgba(45, 212, 191, 0.16);
+}
+
+.feedSurface--bento .item {
+  position: relative;
+  overflow: hidden;
+  padding: 20px;
+  box-shadow: 0 18px 54px rgba(15, 23, 42, 0.07);
+}
+
+.feedSurface--bento .item::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: linear-gradient(90deg, #60a5fa, #2dd4bf, #a78bfa);
+  opacity: 0;
+  transition: opacity 180ms ease;
+  content: "";
+}
+
+.feedSurface--bento .item:hover::before {
+  opacity: 1;
+}
+
+.feedSurface--bento .item:hover {
+  box-shadow: 0 24px 70px rgba(37, 99, 235, 0.16);
+}
+
+.feedSurface--bento .item h2 {
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.feedSurface--bento .badge.good {
+  border-color: rgba(34, 197, 94, 0.28);
+  background: linear-gradient(135deg, rgba(220, 252, 231, 0.94), rgba(224, 242, 254, 0.82));
+}
+
+.feedSurface--dark::after {
+  background:
+    linear-gradient(115deg, transparent 0%, rgba(125, 211, 252, 0.055) 42%, transparent 58%),
+    linear-gradient(rgba(125, 211, 252, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(125, 211, 252, 0.038) 1px, transparent 1px);
+  background-size: auto, 36px 36px, 36px 36px;
+  animation: darkDrift 12s linear infinite;
+}
+
+.shell:has(.feedSurface--dark) .sidebar {
+  box-shadow: inset -1px 0 0 rgba(125, 211, 252, 0.08);
+}
+
+.feedSurface--dark .pageHead {
+  position: relative;
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.feedSurface--dark .pageHead::after {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: inherit;
+  box-shadow: inset 0 0 40px rgba(56, 189, 248, 0.06);
+  content: "";
+}
+
+.feedSurface--dark h1 {
+  font-size: 52px;
+  letter-spacing: 0;
+  text-shadow: 0 0 26px rgba(125, 211, 252, 0.2);
+}
+
+.feedSurface--dark .styleSwitch {
+  min-height: 72px;
+  border-radius: 10px;
+}
+
+.feedSurface--dark .styleSwitch:hover {
+  box-shadow: 0 0 30px rgba(56, 189, 248, 0.14);
+}
+
+.feedSurface--dark .styleSwitch.active {
+  border-color: rgba(125, 211, 252, 0.48);
+  box-shadow: inset 0 0 0 1px rgba(125, 211, 252, 0.12), 0 0 32px rgba(56, 189, 248, 0.16);
+}
+
+.feedSurface--dark .toolbar,
+.feedSurface--dark .item,
+.feedSurface--dark .aiSummary {
+  border-radius: 12px;
+}
+
+.feedSurface--dark .item {
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.feedSurface--dark .item:hover {
+  border-color: rgba(125, 211, 252, 0.42);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 22px 68px rgba(0, 0, 0, 0.34), 0 0 34px rgba(56, 189, 248, 0.08);
+  transform: translateY(-2px);
+}
+
+.feedSurface--dark .item h2 {
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+.feedSurface--archive::after {
+  opacity: 0.52;
+  background:
+    radial-gradient(circle at 30% 22%, rgba(118, 104, 74, 0.09) 0 1px, transparent 1.4px),
+    linear-gradient(90deg, rgba(78, 87, 65, 0.04) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(78, 87, 65, 0.035) 1px, transparent 1px);
+  background-size: 19px 19px, 38px 38px, 38px 38px;
+}
+
+.shell:has(.feedSurface--archive) .sidebar {
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.42);
+}
+
+.feedSurface--archive .pageHead {
+  display: grid;
+  grid-template-columns: minmax(300px, 430px) minmax(0, 1fr);
+  gap: 34px;
+}
+
+.feedSurface--archive h1 {
+  font-size: 68px;
+  letter-spacing: 0;
+}
+
+.feedSurface--archive .styleSwitcher {
+  align-self: end;
+}
+
+.feedSurface--archive .styleSwitch {
+  min-height: 64px;
+  border-radius: 6px;
+}
+
+.feedSurface--archive .styleSwitch.active {
+  border-color: rgba(91, 109, 67, 0.36);
+  box-shadow: inset 0 0 0 1px rgba(91, 109, 67, 0.12), 0 12px 26px rgba(81, 70, 48, 0.08);
+}
+
+.feedSurface--archive .toolbar {
+  border-radius: 10px;
+  box-shadow: 0 18px 38px rgba(81, 70, 48, 0.07);
+}
+
+.feedSurface--archive .item {
+  border-radius: 10px;
+  box-shadow: 0 18px 42px rgba(81, 70, 48, 0.08);
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.feedSurface--archive .item:hover {
+  border-color: rgba(91, 109, 67, 0.34);
+  box-shadow: 0 24px 56px rgba(81, 70, 48, 0.12);
+  transform: translateY(-1px);
+}
+
+.feedSurface--archive .item h2 {
+  font-size: 29px;
+  letter-spacing: 0;
+}
+
+@keyframes surfaceRise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes darkDrift {
+  from {
+    background-position: 0 0, 0 0, 0 0;
+  }
+
+  to {
+    background-position: 160px 0, 36px 36px, 36px 36px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .feedSurface .pageHead,
+  .feedSurface .toolbar,
+  .feedSurface .stack > .item,
+  .feedSurface--dark::after {
+    animation: none;
+  }
+
+  .styleSwitch,
+  .feedSurface--bento .item,
+  .feedSurface--dark .item,
+  .feedSurface--archive .item {
+    transition: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .shell:has(.feedSurface--swiss) .sidebar,
+  .shell:has(.feedSurface--bento) .sidebar,
+  .shell:has(.feedSurface--dark) .sidebar,
+  .shell:has(.feedSurface--archive) .sidebar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 14px;
+    align-items: center;
+    padding: 14px;
+  }
+
+  .shell:has(.feedSurface--swiss) .brand,
+  .shell:has(.feedSurface--bento) .brand,
+  .shell:has(.feedSurface--dark) .brand,
+  .shell:has(.feedSurface--archive) .brand {
+    margin-bottom: 0;
+  }
+
+  .shell:has(.feedSurface--swiss) .sidebarNav,
+  .shell:has(.feedSurface--bento) .sidebarNav,
+  .shell:has(.feedSurface--dark) .sidebarNav,
+  .shell:has(.feedSurface--archive) .sidebarNav {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .shell:has(.feedSurface--swiss) .navItem,
+  .shell:has(.feedSurface--bento) .navItem,
+  .shell:has(.feedSurface--dark) .navItem,
+  .shell:has(.feedSurface--archive) .navItem {
+    justify-content: center;
+    min-height: 46px;
+    padding: 6px;
+  }
+
+  .shell:has(.feedSurface--swiss) .navItem > span:last-child,
+  .shell:has(.feedSurface--bento) .navItem > span:last-child,
+  .shell:has(.feedSurface--dark) .navItem > span:last-child,
+  .shell:has(.feedSurface--archive) .navItem > span:last-child {
+    display: none;
+  }
+
+  .feedSurface--swiss .pageHead,
+  .feedSurface--archive .pageHead {
+    grid-template-columns: 1fr;
+    gap: 18px;
+  }
+
+  .feedSurface--swiss h1,
+  .feedSurface--bento h1,
+  .feedSurface--dark h1,
+  .feedSurface--archive h1 {
+    font-size: 46px;
+  }
+
+  .feedSurface--swiss .styleSwitcher {
+    border-left: 0;
+    padding-left: 0;
+  }
+}
+
+@media (max-width: 560px) {
+  .feedSurface .styleSwitcher,
+  .feedSurface--swiss .styleSwitcher {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .feedSurface .styleSwitch {
+    min-height: 58px;
+    padding: 8px 10px;
+  }
+
+  .feedSurface .styleSwitch strong {
+    font-size: 11px;
+  }
+
+  .shell:has(.feedSurface--swiss) .sidebar,
+  .shell:has(.feedSurface--bento) .sidebar,
+  .shell:has(.feedSurface--dark) .sidebar,
+  .shell:has(.feedSurface--archive) .sidebar {
+    grid-template-columns: 1fr;
+  }
+
+  .shell:has(.feedSurface--swiss) .brand,
+  .shell:has(.feedSurface--bento) .brand,
+  .shell:has(.feedSurface--dark) .brand,
+  .shell:has(.feedSurface--archive) .brand {
+    justify-content: center;
+  }
+
+  .feedSurface--swiss h1,
+  .feedSurface--bento h1,
+  .feedSurface--dark h1,
+  .feedSurface--archive h1 {
+    font-size: 40px;
+  }
+}
