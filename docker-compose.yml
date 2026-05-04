@@ -6,9 +6,10 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: ${DATABASE_URL:-sqlite:////data/daily-info.db}
-      API_BASE_URL: http://127.0.0.1:8000
-    network_mode: host
-    command: ["uvicorn", "app.api:app", "--host", "127.0.0.1", "--port", "8000"]
+      API_BASE_URL: http://api:8000
+    command: ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:8000:8000"
     volumes:
       - daily_info_data:/data
       - ./config/sources:/app/config/sources
@@ -25,8 +26,7 @@ services:
       dockerfile: Dockerfile.api
     env_file: .env
     environment:
-      API_BASE_URL: http://127.0.0.1:8000
-    network_mode: host
+      API_BASE_URL: http://api:8000
     command: ["python", "-m", "app.worker"]
     volumes:
       - daily_info_data:/data
@@ -41,8 +41,7 @@ services:
       dockerfile: Dockerfile.api
     env_file: .env
     environment:
-      API_BASE_URL: http://127.0.0.1:8000
-    network_mode: host
+      API_BASE_URL: http://api:8000
     command: ["python", "-m", "app.scheduler"]
     volumes:
       - daily_info_data:/data

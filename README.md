@@ -17,6 +17,7 @@ Daily Info is a self-hosted reading desk for research papers, engineering blogs,
 ## Screens
 
 - Web app: `http://localhost:3000`
+- Visual direction comparison: `http://localhost:3000/visual-directions`
 - API docs: `http://localhost:8000/docs`
 - Health page: `http://localhost:3000/health`
 - Source Catalog: `http://localhost:3000/sources`
@@ -134,6 +135,17 @@ For a production-like frontend check:
 npm run build
 npm run start
 ```
+
+## Visual Direction Pages
+
+The app includes four feed-layout visual directions for comparing future UI style decisions without changing feed data or filter behavior:
+
+- `http://localhost:3000/visual-directions/swiss` - Swiss Editorial Academic.
+- `http://localhost:3000/visual-directions/bento` - Minimal Tech Bento.
+- `http://localhost:3000/visual-directions/dark` - Dark Futuristic Dashboard.
+- `http://localhost:3000/visual-directions/archive` - Warm Humanist Archive.
+
+Each page uses the same `Unified Feed` content and actions as the default feed. Use the in-page style switcher or the sidebar `Visuals` link to move between directions.
 
 ## Source Audit
 

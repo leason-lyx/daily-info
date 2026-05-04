@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Library, Settings, SquareKanban } from "lucide-react";
+import { Activity, Library, Palette, Settings, SquareKanban } from "lucide-react";
 
 const nav = [
   { href: "/", label: "Feed", icon: SquareKanban },
+  { href: "/visual-directions", label: "Visuals", icon: Palette },
   { href: "/sources", label: "Sources", icon: Library },
   { href: "/health", label: "Health", icon: Activity },
   { href: "/settings", label: "Settings", icon: Settings },
