@@ -36,7 +36,13 @@ def test_docker_context_keeps_source_pack_and_excludes_env_secrets() -> None:
 def test_api_smoke_uses_temp_database(tmp_path: Path) -> None:
     result = run_python(
         """
+        import os
+
         from fastapi.testclient import TestClient
+
+        os.environ.pop("X_BEARER_TOKEN", None)
+        from app.config import get_settings
+        get_settings.cache_clear()
 
         from app.api import app
 
@@ -150,6 +156,129 @@ def test_fetch_feed_parses_entry_categories_as_tags(tmp_path: Path) -> None:
         print("ok")
         """,
         sqlite_url(tmp_path / "feed-tags.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_x_user_adapter_fetches_incrementally(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        import httpx
+
+        from app.adapters import XUserAdapter
+        from app.config import Settings
+        from app.models import SourceAttempt, SourceRuntime
+        from app.utils import dumps
+
+        seen = []
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def get(self, url, headers=None, params=None):
+                seen.append((url, headers, params))
+                request = httpx.Request("GET", url)
+                if url.endswith("/users/by/username/thsottiaux"):
+                    return httpx.Response(
+                        200,
+                        json={"data": {"id": "42", "name": "Tibo", "username": "thsottiaux"}},
+                        request=request,
+                    )
+                assert url.endswith("/users/42/tweets")
+                assert headers["Authorization"] == "Bearer test-token"
+                assert params["since_id"] == "100"
+                assert params["exclude"] == "retweets,replies"
+                return httpx.Response(
+                    200,
+                    json={
+                        "data": [
+                            {
+                                "id": "101",
+                                "text": "Shipping a useful AI workflow today",
+                                "created_at": "2026-05-04T01:02:03.000Z",
+                                "author_id": "42",
+                                "public_metrics": {"like_count": 7},
+                            }
+                        ],
+                        "includes": {"users": [{"id": "42", "name": "Tibo", "username": "thsottiaux"}]},
+                        "meta": {"newest_id": "101", "result_count": 1},
+                    },
+                    request=request,
+                )
+
+        attempt = SourceAttempt(
+            adapter="x_user",
+            route="@thsottiaux",
+            config=dumps({"limit": 20, "exclude": ["retweets", "replies"]}),
+        )
+        runtime = SourceRuntime(source_id="x-thsottiaux", cursor="100")
+        settings = Settings(x_bearer_token="test-token")
+        with patch("app.adapters.httpx.AsyncClient", FakeAsyncClient):
+            result = asyncio.run(XUserAdapter().fetch(attempt, settings, runtime=runtime))
+
+        assert len(seen) == 2
+        assert result.cursor == "101"
+        assert len(result.entries) == 1
+        entry = result.entries[0]
+        assert entry.title == "Shipping a useful AI workflow today"
+        assert entry.url == "https://x.com/thsottiaux/status/101"
+        assert entry.authors == ["Tibo"]
+        assert entry.published_at is not None
+        assert entry.raw_payload["source"] == "x_user"
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "x-user-adapter.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_x_user_adapter_requires_bearer_token(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+
+        from app.adapters import AdapterError, XUserAdapter
+        from app.config import Settings
+        from app.models import SourceAttempt
+
+        try:
+            asyncio.run(XUserAdapter().fetch(SourceAttempt(adapter="x_user", route="thsottiaux"), Settings(x_bearer_token="")))
+        except AdapterError as exc:
+            assert exc.code == "missing_x_bearer_token"
+        else:
+            raise AssertionError("expected missing token error")
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "x-user-token.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_x_user_preview_reports_missing_bearer_token(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from fastapi.testclient import TestClient
+
+        from app.api import app
+
+        with TestClient(app) as client:
+            response = client.post("/api/sources/preview", json={"adapter": "x_user", "route": "thsottiaux"})
+            assert response.status_code == 422, response.text
+            data = response.json()
+            assert data["detail"]["code"] == "missing_x_bearer_token"
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "x-user-preview-token.db"),
     )
     assert result.stdout.strip() == "ok"
 
@@ -414,7 +543,7 @@ def test_fetch_run_counts_only_new_summary_jobs_for_source(tmp_path: Path) -> No
             queue_job(db, "summarize_item", {"item_id": existing.id})
             db.commit()
 
-            async def fake_run_attempt(_attempt, _settings):
+            async def fake_run_attempt(_attempt, _settings, runtime=None):
                 return type(
                     "Result",
                     (),
@@ -1284,6 +1413,31 @@ def test_openai_news_uses_full_official_rss_feed(tmp_path: Path) -> None:
         print("ok")
         """,
         sqlite_url(tmp_path / "openai-news-full-rss.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_tibo_x_source_uses_x_user_adapter(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from app.source_catalog import load_source_catalog
+
+        definitions = {definition.id: definition for definition, _ in load_source_catalog()}
+        source = definitions["x-thsottiaux"]
+        attempt = source.fetch.attempts[0]
+
+        assert source.kind == "post"
+        assert source.platform == "x"
+        assert source.group == "Social Media"
+        assert source.auth.mode == "bearer"
+        assert source.auth.secret_ref == "X_BEARER_TOKEN"
+        assert attempt.adapter == "x_user"
+        assert attempt.route == "thsottiaux"
+        assert attempt.limit == 20
+        assert attempt.exclude == ["retweets", "replies"]
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "tibo-x-source.db"),
     )
     assert result.stdout.strip() == "ok"
 

@@ -60,6 +60,8 @@ Common settings:
 | `NEXT_PUBLIC_API_BASE_URL` | API URL used by the browser. Defaults to `http://localhost:8000`; when a localhost value is used from a non-localhost page, the frontend rewrites it to the current hostname on port `8000` for Tailscale Serve access. |
 | `RSSHUB_PUBLIC_INSTANCES` | Comma-separated public RSSHub instances used for RSSHub routes. |
 | `RSSHUB_SELF_HOSTED_BASE_URL` | Optional private RSSHub instance. |
+| `X_BEARER_TOKEN` | Optional X API v2 Bearer Token for `x_user` social media sources. |
+| `X_API_BASE_URL` | Optional X API base URL. Defaults to `https://api.x.com/2`. |
 | `LLM_PROVIDER_TYPE` | `none`, `openai_compatible`, or `codex_cli`. |
 | `LLM_BASE_URL` | Initial OpenAI-compatible API base URL. Additional custom API profiles can be managed in Settings. |
 | `LLM_API_KEY` | Optional initial API key for summary generation. |
@@ -82,6 +84,8 @@ Catalog entries are opt-in:
 When the same content appears in multiple sources, Daily Info stores one item keyed by `dedupe_key` and records every source in `item_sources`. Feed and API responses expose those origins through `sources[]`; the single `source_id/source_name` pair is the primary source for display.
 
 Source definition files may include fetch attempts, fulltext policy, summary policy, filters, tags, grouping, and metadata. They should not contain API keys, cookies, tokens, or other secrets, including when edited from the web UI. If a source eventually needs credentials, store only a secret reference in catalog metadata and keep the secret value in runtime configuration.
+
+Social media sources that use `adapter: x_user` read public posts through the official X API v2. Set `X_BEARER_TOKEN` in `.env`, then subscribe to the source in `/sources`; the worker stores the newest post id as a cursor and uses it for incremental fetches.
 
 ## Local Development
 

@@ -8,7 +8,8 @@ function slugify(value: string) {
   return value.toLowerCase().replace(/https?:\/\//, "").replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 72);
 }
 
-function platformFromInput(url: string, route: string) {
+function platformFromInput(url: string, route: string, adapter: string) {
+  if (adapter === "x_user") return "x";
   if (!url.trim()) return route.trim() ? "rsshub" : "custom";
   try {
     return new URL(url).hostname.replace(/^www\./, "");
@@ -51,22 +52,22 @@ export default function NewSourcePage() {
       id,
       title: name || id,
       kind: contentType,
-      platform: platformFromInput(url, route),
-      homepage: url,
-      group: contentType === "paper" ? "Papers" : contentType === "post" ? "Posts" : "Blogs",
+      platform: platformFromInput(url, route, adapter),
+      homepage: adapter === "x_user" && route ? `https://x.com/${route.replace(/^@/, "")}` : url,
+      group: adapter === "x_user" ? "Social Media" : contentType === "paper" ? "Papers" : contentType === "post" ? "Posts" : "Blogs",
       priority: 100,
       language: "auto",
       tags: [contentType],
       fetch: {
         strategy: "first_success",
         interval_seconds: 3600,
-        attempts: [{ adapter: adapter as "feed" | "rsshub" | "html_index" | "page_index", url, route, timeout_seconds: 20 }],
+        attempts: [{ adapter: adapter as "feed" | "rsshub" | "html_index" | "page_index" | "x_user", url, route, timeout_seconds: 20 }],
       },
       fulltext: { mode: contentType === "blog" ? "detail_only" : "feed_only", max_detail_pages_per_run: 20 },
       summary: { auto: contentType !== "paper", window_days: 7 },
       tagging: { mode: "llm", max_tags: 5 },
       filters: { include_keywords: [], exclude_keywords: [] },
-      auth: { mode: "none" },
+      auth: adapter === "x_user" ? { mode: "bearer", secret_ref: "X_BEARER_TOKEN" } : { mode: "none" },
       stability: "user",
     };
     try {
@@ -104,6 +105,7 @@ export default function NewSourcePage() {
               <option value="rsshub">RSSHub</option>
               <option value="html_index">HTML fallback</option>
               <option value="page_index">Page index</option>
+              <option value="x_user">X user</option>
             </select>
           </div>
           <div className="field">

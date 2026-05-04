@@ -53,6 +53,7 @@ config/sources/
 - `rsshub`：RSSHub route 或 RSSHub URL。
 - `html_index`：没有 feed 时的 HTML 列表页 fallback。
 - `page_index`：官方列表页解析，提取文章链接和发布时间；适合 RSSHub route 漏项或上游无专用 feed 的 source。
+- `x_user`：通过官方 X API v2 抓取某个用户的公开 posts；`route` 填 username，运行环境需要 `X_BEARER_TOKEN`。
 
 attempt 可以配置：
 
@@ -62,6 +63,7 @@ attempt 可以配置：
 - `selectors`
 - `limit`
 - `reader_fallback`：`page_index` 可用；当官方页面阻止普通 HTTP 抓取时，通过 reader fallback 获取页面文本。
+- `exclude`：`x_user` 可用，如 `[retweets, replies]`。
 
 ## Fulltext Policy
 
@@ -112,6 +114,8 @@ Source catalog 不能包含真实 secret 值。
 - 个人账号凭据
 
 如果未来某个 source 需要认证，catalog 中只保存 `secret_ref` 这样的引用名，真实 secret 放在 `.env`、settings 或其他运行时 secret store。
+
+`x_user` source 使用 `auth.mode: bearer` 和 `secret_ref: X_BEARER_TOKEN` 表示需要 X API Bearer Token；真实 token 只写入 `.env`。
 
 网页编辑也遵守同一规则：不要在 source 的标签、过滤词、URL、metadata 或 auth 字段里保存真实 secret。
 
