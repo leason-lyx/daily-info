@@ -5,7 +5,7 @@ sources:
     kind: post
     platform: x
     homepage: https://x.com/thsottiaux
-    group: Social Media
+    group: Personal Posts
     language: en
     tags: [x, ai]
     fetch:
@@ -16,6 +16,32 @@ sources:
           route: /twitter/user/thsottiaux/readable=1&includeRts=0&count=20
           limit: 20
           timeout_seconds: 20
+    fulltext:
+      mode: feed_only
+    summary:
+      auto: true
+      window_days: 7
+    tagging:
+      mode: llm
+      max_tags: 5
+    auth:
+      mode: none
+    stability: stable
+  - id: simon-willison-blog
+    title: Simon Willison
+    kind: blog
+    platform: simonwillison
+    homepage: https://simonwillison.net/
+    group: Personal Posts
+    language: en
+    tags: [simon-willison, ai]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: feed
+          url: https://simonwillison.net/atom/everything/
+          timeout_seconds: 30
     fulltext:
       mode: feed_only
     summary:

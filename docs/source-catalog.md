@@ -20,6 +20,8 @@ config/sources/
 
 `/sources` 页面可以编辑低风险 source 配置，并展示最近抓取时间、最新内容发布时间和本次抓取新增数量。保存时后端会先更新对应 YAML 文件，再把同一份 definition 同步到数据库，避免“网页显示值”和“下次启动同步值”分裂。网页新建的 custom source 会写入 `config/sources/custom.yaml`。
 
+`Personal Posts` 分组用于单人更新源，既可以包含社交媒体账号，也可以包含个人博客。有官方 RSS 或 Atom 的个人博客优先使用 `feed` adapter；X/Twitter 账号默认使用 RSSHub route。
+
 ## Source Definition 字段
 
 常用字段：
