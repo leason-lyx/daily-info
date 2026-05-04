@@ -20,9 +20,6 @@ class Settings(BaseSettings):
     )
     rsshub_self_hosted_base_url: str | None = None
 
-    x_api_base_url: str = "https://api.x.com/2"
-    x_bearer_token: str | None = None
-
     llm_provider_type: Literal["none", "openai_compatible", "codex_cli"] = "none"
     llm_base_url: str | None = None
     llm_api_key: str | None = None

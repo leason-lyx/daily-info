@@ -80,14 +80,13 @@ export type SourceAttempt = {
 };
 
 export type SourceFetchAttempt = {
-  adapter: "feed" | "rsshub" | "html_index" | "page_index" | "x_user";
+  adapter: "feed" | "rsshub" | "html_index" | "page_index";
   url?: string;
   route?: string;
   timeout_seconds?: number;
   selectors?: string[];
   limit?: number;
   reader_fallback?: boolean;
-  exclude?: string[];
 };
 
 export type SourceFetch = {

@@ -12,10 +12,9 @@ sources:
       strategy: first_success
       interval_seconds: 1800
       attempts:
-        - adapter: x_user
-          route: thsottiaux
+        - adapter: rsshub
+          route: /twitter/user/thsottiaux/readable=1&includeRts=0&count=20
           limit: 20
-          exclude: [retweets, replies]
           timeout_seconds: 20
     fulltext:
       mode: feed_only
@@ -26,6 +25,5 @@ sources:
       mode: llm
       max_tags: 5
     auth:
-      mode: bearer
-      secret_ref: X_BEARER_TOKEN
+      mode: none
     stability: stable

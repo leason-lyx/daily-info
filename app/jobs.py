@@ -55,10 +55,8 @@ async def fetch_source_job(db: Session, source_id: str, settings: Settings) -> S
     for attempt in attempts:
         try:
             queued_before = _queued_summary_item_ids(db, source.id)
-            result = await run_attempt(attempt, settings, runtime=runtime)
+            result = await run_attempt(attempt, settings)
             raw_count, item_count, fulltext_success = await persist_entries(db, source, result.entries, settings)
-            if getattr(result, "cursor", None):
-                runtime.cursor = result.cursor
             queue_auto_summaries(db, settings, source_id=source.id, limit=20)
             queued_after = _queued_summary_item_ids(db, source.id)
             run.status = "succeeded" if raw_count else "empty"

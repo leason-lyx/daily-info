@@ -2,19 +2,18 @@ from dataclasses import dataclass, field
 import re
 from typing import Protocol
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import feedparser
 import httpx
 from bs4 import BeautifulSoup
 
 from app.config import Settings
-from app.models import SourceAttempt, SourceRuntime
+from app.models import SourceAttempt
 from app.utils import dumps, loads, parse_datetime
 
 
 RSSHUB_TIMEOUT_SECONDS = 45
-X_USER_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
 MONTH_DATE_RE = re.compile(
     r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},\s+\d{4}\b",
     re.IGNORECASE,
@@ -60,7 +59,6 @@ class AdapterResult:
     warnings: list[str] = field(default_factory=list)
     used_url: str | None = None
     used_rsshub_instance: str | None = None
-    cursor: str | None = None
 
 
 class AdapterError(RuntimeError):
@@ -71,7 +69,7 @@ class AdapterError(RuntimeError):
 
 
 class Adapter(Protocol):
-    async def fetch(self, attempt: SourceAttempt, settings: Settings, runtime: SourceRuntime | None = None) -> AdapterResult:
+    async def fetch(self, attempt: SourceAttempt, settings: Settings) -> AdapterResult:
         ...
 
 
@@ -345,14 +343,14 @@ async def fetch_page_index(url: str, timeout: int = 20, limit: int = 20, reader_
 
 
 class FeedAdapter:
-    async def fetch(self, attempt: SourceAttempt, settings: Settings, runtime: SourceRuntime | None = None) -> AdapterResult:
+    async def fetch(self, attempt: SourceAttempt, settings: Settings) -> AdapterResult:
         config = loads(attempt.config, {})
         timeout = int(config.get("timeout_seconds", config.get("timeout", 20)))
         return await fetch_feed(attempt.url, timeout=timeout)
 
 
 class RsshubAdapter:
-    async def fetch(self, attempt: SourceAttempt, settings: Settings, runtime: SourceRuntime | None = None) -> AdapterResult:
+    async def fetch(self, attempt: SourceAttempt, settings: Settings) -> AdapterResult:
         route = attempt.route or attempt.url
         config = loads(attempt.config, {})
         timeout = int(config.get("timeout_seconds", config.get("timeout", RSSHUB_TIMEOUT_SECONDS)))
@@ -373,14 +371,14 @@ class RsshubAdapter:
 
 
 class HtmlIndexAdapter:
-    async def fetch(self, attempt: SourceAttempt, settings: Settings, runtime: SourceRuntime | None = None) -> AdapterResult:
+    async def fetch(self, attempt: SourceAttempt, settings: Settings) -> AdapterResult:
         config = loads(attempt.config, {})
         timeout = int(config.get("timeout_seconds", config.get("timeout", 20)))
         return await fetch_html_index(attempt.url, timeout=timeout)
 
 
 class PageIndexAdapter:
-    async def fetch(self, attempt: SourceAttempt, settings: Settings, runtime: SourceRuntime | None = None) -> AdapterResult:
+    async def fetch(self, attempt: SourceAttempt, settings: Settings) -> AdapterResult:
         config = loads(attempt.config, {})
         timeout = int(config.get("timeout_seconds", config.get("timeout", 20)))
         limit = int(config.get("limit", 20))
@@ -388,144 +386,21 @@ class PageIndexAdapter:
         return await fetch_page_index(attempt.url, timeout=timeout, limit=limit, reader_fallback=reader_fallback)
 
 
-class XUserAdapter:
-    async def fetch(self, attempt: SourceAttempt, settings: Settings, runtime: SourceRuntime | None = None) -> AdapterResult:
-        token = settings.x_bearer_token
-        if not token:
-            raise AdapterError("missing_x_bearer_token", "Set X_BEARER_TOKEN in .env to fetch X user posts.")
-
-        config = loads(attempt.config, {})
-        timeout = int(config.get("timeout_seconds", config.get("timeout", 20)))
-        username = _normalize_x_username(attempt.route or attempt.url)
-        max_results = max(5, min(100, int(config.get("max_results", config.get("limit", 20)))))
-        exclude = _normalize_x_exclude(config.get("exclude", ["retweets", "replies"]))
-        since_id = _x_since_id(runtime, config)
-        api_base = str(config.get("api_base_url") or settings.x_api_base_url).rstrip("/")
-
-        headers = {"Authorization": f"Bearer {token}", "User-Agent": "daily-info/0.1"}
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            user = await _x_get_json(client, f"{api_base}/users/by/username/{username}", headers, params={"user.fields": "id,name,username"})
-            user_data = user.get("data") or {}
-            user_id = str(user_data.get("id") or "")
-            if not user_id:
-                raise AdapterError("x_user_not_found", f"X user {username!r} was not found.")
-
-            params: dict[str, str | int] = {
-                "max_results": max_results,
-                "tweet.fields": "id,text,created_at,author_id,conversation_id,referenced_tweets,entities,public_metrics,lang",
-                "user.fields": "id,name,username",
-                "expansions": "author_id",
-            }
-            if exclude:
-                params["exclude"] = ",".join(exclude)
-            if since_id:
-                params["since_id"] = since_id
-            payload = await _x_get_json(client, f"{api_base}/users/{user_id}/tweets", headers, params=params)
-
-        tweets = payload.get("data") or []
-        if not isinstance(tweets, list):
-            raise AdapterError("x_bad_response", "X API returned an unexpected posts payload.")
-        includes = payload.get("includes") or {}
-        users = {str(item.get("id")): item for item in includes.get("users") or [] if isinstance(item, dict)}
-        author = users.get(user_id, user_data)
-        entries = [_raw_entry_from_x_tweet(tweet, author, username) for tweet in tweets if isinstance(tweet, dict)]
-        cursor = str((payload.get("meta") or {}).get("newest_id") or _latest_x_id(tweets) or "")
-        return AdapterResult(entries=entries, used_url=f"https://x.com/{username}", cursor=cursor or None)
-
-
-def _normalize_x_username(value: str) -> str:
-    value = value.strip().lstrip("@")
-    if value.startswith("http://") or value.startswith("https://"):
-        parsed = urlparse(value)
-        value = parsed.path.strip("/").split("/", 1)[0]
-    if not X_USER_RE.fullmatch(value):
-        raise AdapterError("invalid_x_username", f"Invalid X username: {value!r}")
-    return value
-
-
-def _normalize_x_exclude(value: Any) -> list[str]:
-    if isinstance(value, str):
-        values = [part.strip() for part in value.split(",")]
-    elif isinstance(value, list):
-        values = [str(part).strip() for part in value]
-    else:
-        values = []
-    allowed = {"retweets", "replies"}
-    return [part for part in values if part in allowed]
-
-
-def _x_since_id(runtime: SourceRuntime | None, config: dict[str, Any]) -> str:
-    configured = str(config.get("since_id") or "").strip()
-    if configured:
-        return configured
-    return str(getattr(runtime, "cursor", "") or "").strip()
-
-
-async def _x_get_json(client: httpx.AsyncClient, url: str, headers: dict[str, str], params: dict[str, Any]) -> dict[str, Any]:
-    response = await client.get(url, headers=headers, params=params)
-    if response.status_code == 429:
-        raise AdapterError("x_rate_limited", "X API rate limit exceeded.")
-    if response.status_code >= 400:
-        raise AdapterError("x_api_error", f"GET {url} returned {response.status_code}: {_x_error_message(response)}")
-    payload = response.json()
-    if not isinstance(payload, dict):
-        raise AdapterError("x_bad_response", "X API returned a non-object response.")
-    return payload
-
-
-def _x_error_message(response: httpx.Response) -> str:
-    try:
-        payload = response.json()
-    except ValueError:
-        return response.text[:500]
-    detail = payload.get("detail") or payload.get("title") or payload.get("errors")
-    return str(detail)[:500]
-
-
-def _raw_entry_from_x_tweet(tweet: dict[str, Any], author: dict[str, Any], fallback_username: str) -> RawEntryData:
-    tweet_id = str(tweet.get("id") or "")
-    text = str(tweet.get("text") or "").strip()
-    username = str(author.get("username") or fallback_username)
-    title = _x_post_title(text, tweet_id)
-    return RawEntryData(
-        title=title,
-        url=f"https://x.com/{username}/status/{tweet_id}",
-        published_at=parse_datetime(tweet.get("created_at")),
-        authors=[str(author.get("name") or username)],
-        summary=text,
-        content=text,
-        raw_payload={"source": "x_user", "tweet": tweet, "author": author},
-    )
-
-
-def _x_post_title(text: str, tweet_id: str) -> str:
-    title = " ".join(text.split())
-    if len(title) > 140:
-        title = f"{title[:137].rstrip()}..."
-    return title or f"X post {tweet_id}"
-
-
-def _latest_x_id(tweets: list[Any]) -> str:
-    ids = [str(tweet.get("id")) for tweet in tweets if isinstance(tweet, dict) and str(tweet.get("id") or "").isdigit()]
-    return max(ids, key=int) if ids else ""
-
-
 ADAPTERS: dict[str, Adapter] = {
     "feed": FeedAdapter(),
     "rsshub": RsshubAdapter(),
     "html_index": HtmlIndexAdapter(),
     "page_index": PageIndexAdapter(),
-    "x_user": XUserAdapter(),
 }
 
 
-async def run_attempt(attempt: SourceAttempt, settings: Settings, runtime: SourceRuntime | None = None) -> AdapterResult:
+async def run_attempt(attempt: SourceAttempt, settings: Settings) -> AdapterResult:
     if attempt.adapter == "manual":
         raise AdapterError("manual_not_supported", "Manual import is reserved for a later workflow.")
     adapter = ADAPTERS.get(attempt.adapter)
     if not adapter:
         raise AdapterError("unknown_adapter", f"Unsupported adapter: {attempt.adapter}")
-    return await adapter.fetch(attempt, settings, runtime=runtime)
+    return await adapter.fetch(attempt, settings)
 
 
 async def preview_source(url: str | None, route: str | None, adapter: str, settings: Settings, timeout_seconds: int = 20) -> AdapterResult:
@@ -541,9 +416,6 @@ async def preview_source(url: str | None, route: str | None, adapter: str, setti
         if not url:
             raise AdapterError("missing_url", "URL is required for page index preview")
         return await fetch_page_index(url, timeout=timeout_seconds, reader_fallback=True)
-    if adapter == "x_user":
-        attempt = SourceAttempt(adapter="x_user", route=route or url or "", config=dumps({"timeout_seconds": timeout_seconds}))
-        return await run_attempt(attempt, settings)
     if not url:
         raise AdapterError("missing_url", "URL is required")
     feed_url, discover_warnings = await discover_feed(url)

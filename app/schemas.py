@@ -15,14 +15,13 @@ class SourceAttemptIn(BaseModel):
 
 
 class FetchAttemptIn(BaseModel):
-    adapter: Literal["feed", "rsshub", "html_index", "page_index", "x_user"]
+    adapter: Literal["feed", "rsshub", "html_index", "page_index"]
     url: str = ""
     route: str = ""
     timeout_seconds: int = Field(default=20, ge=1, le=120)
     selectors: list[str] = Field(default_factory=list)
     limit: int = Field(default=20, ge=1, le=200)
     reader_fallback: bool = False
-    exclude: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def require_location(self):
@@ -30,8 +29,6 @@ class FetchAttemptIn(BaseModel):
             raise ValueError(f"{self.adapter} attempt requires url")
         if self.adapter == "rsshub" and not (self.route or self.url):
             raise ValueError("rsshub attempt requires route or url")
-        if self.adapter == "x_user" and not (self.route or self.url):
-            raise ValueError("x_user attempt requires route or url")
         return self
 
 
