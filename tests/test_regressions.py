@@ -1332,6 +1332,36 @@ def test_tibo_x_source_uses_rsshub_route(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_karpathy_x_source_uses_rsshub_route(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from app.source_catalog import load_source_catalog
+
+        definitions = {definition.id: definition for definition, _ in load_source_catalog()}
+        source = definitions["x-karpathy"]
+        attempt = source.fetch.attempts[0]
+
+        assert source.title == "X - Andrej Karpathy"
+        assert source.kind == "post"
+        assert source.platform == "x"
+        assert source.homepage == "https://x.com/karpathy"
+        assert source.group == "Personal Posts"
+        assert source.auth.mode == "none"
+        assert source.auth.secret_ref == ""
+        assert source.fulltext.mode == "feed_only"
+        assert source.summary.auto is True
+        assert source.tagging.mode == "llm"
+        assert attempt.adapter == "rsshub"
+        assert attempt.route == "/twitter/user/karpathy/readable=1&includeRts=0&count=20"
+        assert attempt.limit == 20
+        assert attempt.timeout_seconds == 20
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "karpathy-x-source.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_simon_willison_source_uses_atom_feed(tmp_path: Path) -> None:
     result = run_python(
         """
