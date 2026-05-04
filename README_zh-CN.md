@@ -17,6 +17,7 @@ Daily Info 是一个自托管的信息阅读台，用来聚合论文、工程博
 ## 常用入口
 
 - Web 应用：`http://localhost:3000`
+- 视觉方向对比：`http://localhost:3000/visual-directions`
 - API 文档：`http://localhost:8000/docs`
 - 健康页：`http://localhost:3000/health`
 - Source Catalog：`http://localhost:3000/sources`
@@ -134,6 +135,17 @@ npm run dev:poll
 npm run build
 npm run start
 ```
+
+## 视觉方向页面
+
+应用提供 4 个 Feed 视觉方向页面，用于在不改变信息内容、筛选语义和操作行为的前提下横向比较 UI 风格：
+
+- `http://localhost:3000/visual-directions/swiss`：Swiss Editorial Academic。
+- `http://localhost:3000/visual-directions/bento`：Minimal Tech Bento。
+- `http://localhost:3000/visual-directions/dark`：Dark Futuristic Dashboard。
+- `http://localhost:3000/visual-directions/archive`：Warm Humanist Archive。
+
+每个页面都复用默认 `Unified Feed` 的数据和操作。可以通过页面内的风格切换器，或侧边栏的 `Visuals` 入口切换。
 
 ## Source Audit
 

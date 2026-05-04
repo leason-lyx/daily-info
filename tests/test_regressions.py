@@ -8,6 +8,7 @@ from pathlib import Path
 def run_python(script: str, database_url: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["DATABASE_URL"] = database_url
+    env["LLM_PROVIDER_TYPE"] = "none"
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script)],
         check=True,
@@ -31,6 +32,129 @@ def test_docker_context_keeps_source_pack_and_excludes_env_secrets() -> None:
     assert ".env.*" in dockerignore
     assert "!.env.example" in dockerignore
     assert "!.env.local.example" in dockerignore
+
+
+def test_init_db_upgrades_legacy_sqlite_columns(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from sqlalchemy import text
+
+        from app.db import engine, init_db
+
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                \"\"\"
+                CREATE TABLE sources (
+                    id VARCHAR(80) PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    content_type VARCHAR(20) NOT NULL,
+                    platform VARCHAR(80),
+                    homepage_url TEXT,
+                    enabled BOOLEAN,
+                    is_builtin BOOLEAN,
+                    "group" VARCHAR(120),
+                    priority INTEGER,
+                    poll_interval INTEGER,
+                    language_hint VARCHAR(20),
+                    include_keywords TEXT,
+                    exclude_keywords TEXT,
+                    default_tags TEXT,
+                    fulltext TEXT,
+                    auth_mode VARCHAR(40),
+                    stability_level VARCHAR(40),
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                \"\"\"
+            )
+            connection.exec_driver_sql(
+                \"\"\"
+                CREATE TABLE llm_providers (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    provider_type VARCHAR(80),
+                    base_url TEXT,
+                    model_name VARCHAR(120),
+                    temperature VARCHAR(20),
+                    timeout INTEGER,
+                    enabled BOOLEAN,
+                    last_error TEXT,
+                    updated_at DATETIME
+                )
+                \"\"\"
+            )
+            connection.exec_driver_sql(
+                \"\"\"
+                CREATE TABLE items (
+                    id VARCHAR(36) PRIMARY KEY,
+                    source_id VARCHAR(80),
+                    canonical_url TEXT,
+                    title TEXT,
+                    chinese_title TEXT,
+                    url TEXT,
+                    content_type VARCHAR(20),
+                    platform VARCHAR(80),
+                    source_name VARCHAR(255),
+                    authors TEXT,
+                    published_at DATETIME,
+                    summary TEXT,
+                    raw_text TEXT,
+                    tags TEXT,
+                    entities TEXT,
+                    read BOOLEAN,
+                    starred BOOLEAN,
+                    hidden BOOLEAN,
+                    summary_status VARCHAR(40),
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+                \"\"\"
+            )
+            connection.exec_driver_sql(
+                \"\"\"
+                INSERT INTO sources (
+                    id, name, content_type, platform, homepage_url, enabled, is_builtin, "group",
+                    priority, poll_interval, language_hint, include_keywords, exclude_keywords,
+                    default_tags, fulltext, auth_mode, stability_level
+                ) VALUES (
+                    'legacy-source', 'Legacy Source', 'blog', 'example',
+                    'https://example.com', 1, 1, 'General', 100, 3600, 'en',
+                    '[]', '[]', '[]', '{}', 'none', 'stable'
+                )
+                \"\"\"
+            )
+            connection.exec_driver_sql(
+                \"\"\"
+                INSERT INTO items (
+                    id, source_id, canonical_url, title, chinese_title, url, content_type, platform,
+                    source_name, authors, summary, raw_text, tags, entities, read, starred, hidden,
+                    summary_status
+                ) VALUES (
+                    'legacy-item', 'legacy-source', 'https://example.com/legacy', 'Legacy', '',
+                    'https://example.com/legacy', 'blog', 'example', 'Legacy Source', '[]', '', '',
+                    '[]', '[]', 0, 0, 0, 'not_configured'
+                )
+                \"\"\"
+            )
+
+        init_db()
+
+        with engine.connect() as connection:
+            source_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(sources)"))}
+            provider_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(llm_providers)"))}
+            item_columns = {row[1] for row in connection.execute(text("PRAGMA table_info(items)"))}
+            legacy_key = connection.execute(text("SELECT dedupe_key FROM items WHERE id = 'legacy-item'")).scalar_one()
+            subscribed = connection.execute(text("SELECT subscribed FROM source_subscriptions WHERE source_id = 'legacy-source'")).scalar_one()
+
+        assert {"tagging", "fetch", "summary", "auth", "spec_json", "spec_hash", "catalog_file"} <= source_columns
+        assert {"name", "api_key", "priority", "created_at"} <= provider_columns
+        assert "dedupe_key" in item_columns
+        assert legacy_key == "legacy:legacy-item"
+        assert subscribed == 1
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "legacy-schema.db"),
+    )
+    assert result.stdout.strip() == "ok"
 
 
 def test_api_smoke_uses_temp_database(tmp_path: Path) -> None:
