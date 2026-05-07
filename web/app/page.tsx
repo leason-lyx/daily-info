@@ -3,8 +3,8 @@
 import { Suspense } from "react";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Check, ExternalLink, Eye, EyeOff, RefreshCcw, Search, Sparkles, Star } from "lucide-react";
-import { api, Item, Source } from "@/lib/api";
+import { Check, ExternalLink, Eye, EyeOff, RefreshCcw, Save, Search, Sparkles, Star, Trash2 } from "lucide-react";
+import { api, FeedPreset, Item, Source } from "@/lib/api";
 
 const NO_SOURCE_SENTINEL = "__none__";
 const CONTENT_TYPE_LABELS: Record<string, string> = {
@@ -13,6 +13,12 @@ const CONTENT_TYPE_LABELS: Record<string, string> = {
   post: "Post",
 };
 const SOURCE_GROUP_ORDER = ["Papers", "Model Labs", "Engineering Blogs", "AI News", "Tech Media", "Post", "General"];
+const PRIORITY_OPTIONS = [
+  { value: "p0", label: "P0 核心" },
+  { value: "p1", label: "P1 重要" },
+  { value: "p2", label: "P2 普通" },
+  { value: "p3", label: "P3 低频" },
+];
 
 function statusClass(status: string) {
   if (status === "ready") return "badge good";
@@ -145,6 +151,28 @@ function sourceGroupRank(groupName: string) {
   return index === -1 ? SOURCE_GROUP_ORDER.length : index;
 }
 
+function priorityLabel(source: Source) {
+  const tier = source.priority_tier || tierFromPriority(source.effective_priority ?? source.priority ?? 100);
+  const match = PRIORITY_OPTIONS.find((option) => option.value === tier);
+  return match ? match.label : "P2 普通";
+}
+
+function tierFromPriority(value: number) {
+  if (value <= 24) return "p0";
+  if (value <= 74) return "p1";
+  if (value <= 124) return "p2";
+  return "p3";
+}
+
+function stringList(value: unknown) {
+  if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean);
+  return value ? [String(value)] : [];
+}
+
+function hasOwnValue(record: Record<string, unknown>, key: string) {
+  return Object.prototype.hasOwnProperty.call(record, key);
+}
+
 function itemQueryFromFilters(searchParams: URLSearchParams, sourceRows: Source[]) {
   const next = new URLSearchParams(searchParams.toString());
   const sourceParams = next.getAll("source_id");
@@ -166,7 +194,11 @@ function FeedView() {
   const [items, setItems] = useState<Item[]>([]);
   const [total, setTotal] = useState(0);
   const [sources, setSources] = useState<Source[]>([]);
+  const [presets, setPresets] = useState<FeedPreset[]>([]);
   const [error, setError] = useState("");
+  const [presetMessage, setPresetMessage] = useState("");
+  const [savingPreset, setSavingPreset] = useState(false);
+  const [newPresetName, setNewPresetName] = useState("");
   const [loadedQueryKey, setLoadedQueryKey] = useState<string | null>(null);
   const [failedQueryKey, setFailedQueryKey] = useState<string | null>(null);
   const [summarizingIds, setSummarizingIds] = useState<Set<string>>(new Set());
@@ -175,8 +207,27 @@ function FeedView() {
   const query = useMemo(() => new URLSearchParams(queryKey), [queryKey]);
   const isLoading = loadedQueryKey !== queryKey && failedQueryKey !== queryKey;
   const activeError = failedQueryKey === queryKey ? error : "";
-  const searchQuery = searchParams.get("q") || "";
-  const sourceParams = searchParams.getAll("source_id");
+  const activePresetId = searchParams.get("preset_id") || "all";
+  const activePreset = presets.find((preset) => preset.id === activePresetId);
+  const activePresetFilter = useMemo(() => activePreset?.filter || {}, [activePreset]);
+  const searchQuery = searchParams.has("q") ? searchParams.get("q") || "" : String(activePresetFilter.q || "");
+  const explicitSourceKey = searchParams.getAll("source_id").join("\u0000");
+  const sourceParams = useMemo(() => {
+    const explicitSourceParams = explicitSourceKey ? explicitSourceKey.split("\u0000") : [];
+    if (explicitSourceParams.length) return explicitSourceParams;
+    const presetSourceIds = stringList(activePresetFilter.source_ids || activePresetFilter.source_id);
+    if (presetSourceIds.length) return presetSourceIds;
+    const presetGroups = new Set(stringList(activePresetFilter.groups || activePresetFilter.source_group));
+    if (presetGroups.size) return sources.filter((source) => presetGroups.has(sourceGroupName(source))).map((source) => source.id);
+    return [];
+  }, [activePresetFilter, explicitSourceKey, sources]);
+  const currentSince = searchParams.has("since") ? searchParams.get("since") || "" : String(activePresetFilter.since || "");
+  const currentPriorityTier = searchParams.has("priority_tier")
+    ? searchParams.get("priority_tier") || ""
+    : stringList(activePresetFilter.priority_tiers || activePresetFilter.priority_tier)[0] || "";
+  const currentSummaryStatus = searchParams.has("summary_status") ? searchParams.get("summary_status") || "" : String(activePresetFilter.summary_status || "");
+  const currentRank = searchParams.has("rank") ? searchParams.get("rank") || "" : (activePreset?.rank?.mode === "recommended" ? "recommended" : "");
+  const presetAdjusted = Boolean(searchParams.get("preset_id")) && ["source_id", "priority_tier", "since", "q", "summary_status", "rank"].some((key) => searchParams.has(key));
   const selectedSourceIds = useMemo(() => {
     return selectedIdsFromParams(sources, sourceParams);
   }, [sourceParams, sources]);
@@ -203,8 +254,9 @@ function FeedView() {
 
     async function loadFeed() {
       try {
-        const sourceRows = await api.getSources();
+        const [sourceRows, presetRows] = await Promise.all([api.getSources(), api.getFeedPresets()]);
         if (!alive) return;
+        setPresets(presetRows);
         const subscribedRows = sourceRows.filter((source) => source.subscribed);
         setSources(subscribedRows);
         const feed = await api.getItems(itemQueryFromFilters(query, subscribedRows));
@@ -229,9 +281,90 @@ function FeedView() {
 
   function setParam(key: string, value: string) {
     const next = new URLSearchParams(searchParams.toString());
-    if (value) next.set(key, value);
+    const presetHasDefault =
+      key === "rank"
+        ? activePreset?.rank?.mode && activePreset.rank.mode !== "latest"
+        : key === "priority_tier"
+          ? Boolean(activePresetFilter.priority_tiers || activePresetFilter.priority_tier || activePresetFilter.priority_min || activePresetFilter.priority_max)
+          : hasOwnValue(activePresetFilter, key);
+    if (value || (searchParams.has("preset_id") && presetHasDefault)) next.set(key, value);
     else next.delete(key);
     replaceQuery(next);
+  }
+
+  function selectPreset(presetId: string) {
+    const next = new URLSearchParams();
+    next.set("preset_id", presetId);
+    replaceQuery(next);
+  }
+
+  function currentViewFilter() {
+    const filter: Record<string, unknown> = { ...activePresetFilter };
+    const sourceParamsForSave = searchParams.getAll("source_id");
+    const sourceIds = sourceParamsForSave.filter((sourceId) => sourceId !== NO_SOURCE_SENTINEL);
+    const priorityTiers = searchParams.getAll("priority_tier");
+    if (sourceParamsForSave.includes(NO_SOURCE_SENTINEL)) {
+      filter.source_ids = [NO_SOURCE_SENTINEL];
+      delete filter.groups;
+      delete filter.source_group;
+    } else if (sourceIds.length) {
+      filter.source_ids = sourceIds;
+      delete filter.groups;
+      delete filter.source_group;
+    }
+    if (searchParams.has("priority_tier")) {
+      const values = priorityTiers.filter(Boolean);
+      if (values.length) filter.priority_tiers = values;
+      else {
+        delete filter.priority_tiers;
+        delete filter.priority_tier;
+        delete filter.priority_min;
+        delete filter.priority_max;
+      }
+    }
+    for (const key of ["q", "since", "summary_status"]) {
+      if (!searchParams.has(key)) continue;
+      const value = searchParams.get(key) || "";
+      if (value) filter[key] = value;
+      else delete filter[key];
+    }
+    return filter;
+  }
+
+  async function saveCurrentPreset() {
+    const name = newPresetName.trim();
+    if (!name) return;
+    setSavingPreset(true);
+    setPresetMessage("");
+    try {
+      const saved = await api.createFeedPreset({
+        name,
+        description: "",
+        filter: currentViewFilter(),
+        rank: { mode: currentRank || "latest" },
+        sort_order: 100 + presets.filter((preset) => !preset.is_builtin).length,
+      });
+      setPresets((rows) => [...rows, saved].sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name)));
+      setNewPresetName("");
+      selectPreset(saved.id);
+      setPresetMessage(`已保存 ${saved.name}`);
+    } catch (err) {
+      setPresetMessage(err instanceof Error ? err.message : "保存预设失败");
+    } finally {
+      setSavingPreset(false);
+    }
+  }
+
+  async function deletePreset(preset: FeedPreset) {
+    if (preset.is_builtin) return;
+    setPresetMessage("");
+    try {
+      await api.deleteFeedPreset(preset.id);
+      setPresets((rows) => rows.filter((row) => row.id !== preset.id));
+      if (activePresetId === preset.id) selectPreset("all");
+    } catch (err) {
+      setPresetMessage(err instanceof Error ? err.message : "删除预设失败");
+    }
   }
 
   function setSourceFilter(nextSourceIds: string[]) {
@@ -304,6 +437,46 @@ function FeedView() {
         </div>
       </header>
 
+      <section className="presetBar" aria-label="Feed presets">
+        <div className="presetButtons">
+          {presets.map((preset) => {
+            const active = activePresetId === preset.id || (!searchParams.get("preset_id") && preset.id === "all");
+            return (
+              <span className="presetControl" key={preset.id}>
+                <button
+                  type="button"
+                  className={active ? "presetButton active" : "presetButton"}
+                  title={preset.description || preset.name}
+                  onClick={() => selectPreset(preset.id)}
+                >
+                  {preset.name}
+                  {active && presetAdjusted && <span className="presetAdjusted">已调整</span>}
+                </button>
+                {!preset.is_builtin && (
+                  <button className="presetDelete" type="button" title={`删除 ${preset.name}`} aria-label={`删除 ${preset.name}`} onClick={() => void deletePreset(preset)}>
+                    <Trash2 size={14} />
+                  </button>
+                )}
+              </span>
+            );
+          })}
+        </div>
+        <div className="presetSave">
+          <input
+            value={newPresetName}
+            onChange={(event) => setNewPresetName(event.target.value)}
+            placeholder="自定义预设名称"
+            aria-label="自定义预设名称"
+          />
+          <button className="button compact" type="button" onClick={() => void saveCurrentPreset()} disabled={!newPresetName.trim() || savingPreset}>
+            <Save size={16} />
+            {savingPreset ? "保存中" : "保存视图"}
+          </button>
+        </div>
+        {presetMessage && <span className="subtle">{presetMessage}</span>}
+        {activePreset && <span className="subtle">{activePreset.description}</span>}
+      </section>
+
       <section className="toolbar">
         <div className="toolbarPrimary">
           <div className="field">
@@ -324,7 +497,7 @@ function FeedView() {
           </div>
           <div className="field">
             <label htmlFor="feed-window">Window</label>
-            <select id="feed-window" value={searchParams.get("since") || ""} onChange={(e) => setParam("since", e.target.value)}>
+            <select id="feed-window" value={currentSince} onChange={(e) => setParam("since", e.target.value)}>
               <option value="">Any time</option>
               <option value="today">Today</option>
               <option value="3d">Past 3 days</option>
@@ -332,13 +505,29 @@ function FeedView() {
             </select>
           </div>
           <div className="field">
+            <label htmlFor="feed-priority">Priority</label>
+            <select id="feed-priority" value={currentPriorityTier} onChange={(e) => setParam("priority_tier", e.target.value)}>
+              <option value="">Any</option>
+              {PRIORITY_OPTIONS.map((option) => (
+                <option value={option.value} key={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
             <label htmlFor="feed-summary-status">Summary</label>
-            <select id="feed-summary-status" value={searchParams.get("summary_status") || ""} onChange={(e) => setParam("summary_status", e.target.value)}>
+            <select id="feed-summary-status" value={currentSummaryStatus} onChange={(e) => setParam("summary_status", e.target.value)}>
               <option value="">Any</option>
               <option value="not_configured">AI summary off</option>
               <option value="pending">Summarizing</option>
               <option value="ready">AI summary ready</option>
               <option value="failed">Summary failed</option>
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="feed-rank">Rank</label>
+            <select id="feed-rank" value={currentRank} onChange={(e) => setParam("rank", e.target.value)}>
+              <option value="">Latest</option>
+              <option value="recommended">Recommended</option>
             </select>
           </div>
         </div>
@@ -390,7 +579,7 @@ function FeedView() {
                           </span>
                           <span className="sourceOptionText">
                             <span>{source.name}</span>
-                            <span>{source.platform || source.group || source.id}</span>
+                            <span>{priorityLabel(source)} · {source.platform || source.group || source.id}</span>
                           </span>
                         </label>
                       );
@@ -488,8 +677,16 @@ function FeedView() {
                   </span>
                 ))}
               </div>
+              {item.recommendation_reasons?.length ? (
+                <div className="recommendationMeta">
+                  <span className="badge good">Score {Math.round((item.recommendation_score || 0) * 10) / 10}</span>
+                  {item.recommendation_reasons.map((reason) => (
+                    <span className="badge" key={reason}>{reason}</span>
+                  ))}
+                </div>
+              ) : null}
               <div className="actions">
-                <a className="button" href={item.url} target="_blank" rel="noreferrer">
+                <a className="button" href={item.url} target="_blank" rel="noreferrer" onClick={() => void api.recordItemEvent(item.id, "open", { url: item.url })}>
                   <ExternalLink size={16} /> Original
                 </a>
                 <span className={item.read ? "badge readStatus readStatusDone" : "badge readStatus"}>{readStatusLabel(item.read)}</span>

@@ -1723,6 +1723,107 @@ def test_feed_defaults_to_subscribed_sources(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_feed_presets_priority_filters_and_events(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from fastapi.testclient import TestClient
+        from sqlalchemy import func, select
+
+        from app.api import app
+        from app.db import SessionLocal, init_db
+        from app.models import FeedPreset, Item, ItemSource, Source, SourceSubscription, UserItemEvent
+        from app.services import create_feed_preset, item_to_out, list_feed_presets, query_items, resolve_item_query_params, sync_feed_presets
+        from app.utils import dumps
+
+        init_db()
+        now = datetime.now(timezone.utc)
+        with SessionLocal() as db:
+            sync_feed_presets(db)
+            preset_ids = [preset["id"] for preset in list_feed_presets(db)]
+            assert preset_ids[:4] == ["all", "news", "papers", "models"]
+            news_preset = db.get(FeedPreset, "news")
+            news_preset.sort_order = 99
+            news_preset.hidden = True
+            db.commit()
+            sync_feed_presets(db)
+            db.refresh(news_preset)
+            assert news_preset.sort_order == 99
+            assert news_preset.hidden is True
+
+            db.add_all([
+                Source(id="core", name="Core Lab", content_type="blog", platform="core", group="Model Labs", priority=10, default_tags=dumps(["models"])),
+                Source(id="override-low", name="Override Low", content_type="blog", platform="media", group="Tech Media", priority=5, default_tags=dumps(["media"])),
+                Source(id="paper", name="Paper Source", content_type="paper", platform="arxiv", group="Papers", priority=40, default_tags=dumps(["paper"])),
+            ])
+            db.add_all([
+                SourceSubscription(source_id="core", subscribed=True),
+                SourceSubscription(source_id="override-low", subscribed=True, priority_override=130),
+                SourceSubscription(source_id="paper", subscribed=True),
+            ])
+            db.flush()
+            core_item = Item(source_id="core", canonical_url="https://example.com/core", title="Core update", url="https://example.com/core", content_type="blog", platform="core", source_name="Core Lab", published_at=now, tags=dumps(["models"]))
+            low_item = Item(source_id="override-low", canonical_url="https://example.com/low", title="Low priority update", url="https://example.com/low", content_type="blog", platform="media", source_name="Override Low", published_at=now)
+            shared_item = Item(source_id="override-low", canonical_url="https://example.com/shared", title="Shared paper", url="https://example.com/shared", content_type="paper", platform="arxiv", source_name="Override Low", published_at=now - timedelta(days=2), tags=dumps(["paper", "models"]))
+            db.add_all([core_item, low_item, shared_item])
+            db.flush()
+            db.add_all([
+                ItemSource(item_id=core_item.id, source_id="core", source_name="Core Lab", url=core_item.url, canonical_url=core_item.canonical_url),
+                ItemSource(item_id=low_item.id, source_id="override-low", source_name="Override Low", url=low_item.url, canonical_url=low_item.canonical_url),
+                ItemSource(item_id=shared_item.id, source_id="override-low", source_name="Override Low", url=shared_item.url, canonical_url=shared_item.canonical_url),
+                ItemSource(item_id=shared_item.id, source_id="paper", source_name="Paper Source", url=shared_item.url, canonical_url=shared_item.canonical_url),
+            ])
+            custom = create_feed_preset(db, {"name": "Paper View", "filter": {"groups": ["Papers"], "since": "7d"}, "rank": {"mode": "latest"}})
+            db.commit()
+
+            items, total = query_items(db, priority_tier=["p0"])
+            assert total == 1
+            assert items[0].id == core_item.id
+
+            items, total = query_items(db, priority_tier=["p1"])
+            assert total == 1
+            assert items[0].id == shared_item.id
+
+            resolved = resolve_item_query_params(db, preset_id=custom["id"])
+            items, total = query_items(db, **resolved)
+            assert total == 1
+            assert items[0].id == shared_item.id
+
+            resolved = resolve_item_query_params(db, preset_id=custom["id"], priority_tier=["p0"])
+            items, total = query_items(db, **resolved)
+            assert total == 0
+            resolved = resolve_item_query_params(db, preset_id=custom["id"], since="")
+            assert resolved["since"] == ""
+            items, total = query_items(db, **resolved)
+            assert total == 1
+
+            core_id = core_item.id
+            shared_id = shared_item.id
+
+        with TestClient(app) as client:
+            response = client.post(f"/api/items/{core_id}/read", json={})
+            assert response.status_code == 200, response.text
+            response = client.post(f"/api/items/{core_id}/events", json={"event_type": "open", "metadata": {"surface": "test"}})
+            assert response.status_code == 200, response.text
+
+        with SessionLocal() as db:
+            assert db.execute(select(func.count()).select_from(UserItemEvent).where(UserItemEvent.item_id == core_id)).scalar_one() == 2
+            db.add(UserItemEvent(item_id=shared_id, event_type="star", metadata_json="{}"))
+            db.commit()
+            items, total = query_items(db, rank="recommended")
+            assert total == 3
+            assert items[0]._recommendation_score is not None
+            rendered = item_to_out(items[0], db)
+            assert rendered.recommendation_reasons
+            assert db.get(FeedPreset, custom["id"]).is_builtin is False
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "feed-presets-priority-events.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_export_source_pack_strips_runtime_identity(tmp_path: Path) -> None:
     result = run_python(
         """

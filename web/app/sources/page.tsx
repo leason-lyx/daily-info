@@ -487,6 +487,7 @@ function SourceMetadata({ source }: { source: Source }) {
         <span className="sourcePill strong">{source.kind || source.content_type}</span>
         {source.platform ? <span className="sourcePill">{source.platform}</span> : null}
         <span className="sourcePill">{sourceGroupName(source)}</span>
+        <span className="sourcePill priorityPill">{priorityLabel(source)}</span>
       </div>
       <span className="sourceCadence">{formatFetchInterval(fetchInterval)} · {summary}</span>
     </div>
@@ -626,6 +627,21 @@ function sourceGroupName(source: Source) {
 
 function sourceTitle(source: Source) {
   return source.title || source.name || source.id;
+}
+
+function priorityLabel(source: Source) {
+  const tier = source.priority_tier || tierFromPriority(source.effective_priority ?? source.priority ?? 100);
+  if (tier === "p0") return "P0 核心";
+  if (tier === "p1") return "P1 重要";
+  if (tier === "p3") return "P3 低频";
+  return "P2 普通";
+}
+
+function tierFromPriority(value: number) {
+  if (value <= 24) return "p0";
+  if (value <= 74) return "p1";
+  if (value <= 124) return "p2";
+  return "p3";
 }
 
 function slugify(value: string) {

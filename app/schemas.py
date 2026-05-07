@@ -115,6 +115,8 @@ class SourceSubscriptionOut(BaseModel):
 
 class SourceDefinitionOut(SourceDefinitionIn):
     subscribed: bool = False
+    effective_priority: int = 100
+    priority_tier: str = "p2"
     runtime: SourceRuntimeOut | None = None
     latest_run: dict[str, Any] | None = None
     latest_item_published_at: datetime | None = None
@@ -274,12 +276,61 @@ class ItemOut(BaseModel):
     starred: bool
     hidden: bool
     summary_status: str
+    recommendation_score: float | None = None
+    recommendation_reasons: list[str] = Field(default_factory=list)
     sources: list[ItemSourceOut] = Field(default_factory=list)
 
 
 class ItemListOut(BaseModel):
     items: list[ItemOut]
     total: int
+
+
+class FeedPresetIn(BaseModel):
+    id: str | None = None
+    name: str
+    description: str = ""
+    sort_order: int = 100
+    hidden: bool = False
+    filter: dict[str, Any] = Field(default_factory=dict)
+    rank: dict[str, Any] = Field(default_factory=lambda: {"mode": "latest"})
+
+
+class FeedPresetPatch(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    sort_order: int | None = None
+    hidden: bool | None = None
+    filter: dict[str, Any] | None = None
+    rank: dict[str, Any] | None = None
+
+
+class FeedPresetOut(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    is_builtin: bool = False
+    sort_order: int = 100
+    hidden: bool = False
+    filter: dict[str, Any] = Field(default_factory=dict)
+    rank: dict[str, Any] = Field(default_factory=lambda: {"mode": "latest"})
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ItemEventIn(BaseModel):
+    event_type: Literal["open", "read", "unread", "star", "unstar", "hide", "unhide"]
+    source_id: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ItemEventOut(BaseModel):
+    id: int
+    item_id: str
+    event_type: str
+    source_id: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime | None = None
 
 
 class LLMProviderIn(BaseModel):

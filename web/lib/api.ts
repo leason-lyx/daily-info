@@ -40,6 +40,8 @@ export type Source = {
   tags: string[];
   enabled: boolean;
   subscribed: boolean;
+  effective_priority: number;
+  priority_tier: string;
   is_builtin: boolean;
   group: string;
   priority: number;
@@ -299,7 +301,22 @@ export type Item = {
   starred: boolean;
   hidden: boolean;
   summary_status: string;
+  recommendation_score?: number | null;
+  recommendation_reasons?: string[];
   sources: ItemSource[];
+};
+
+export type FeedPreset = {
+  id: string;
+  name: string;
+  description: string;
+  is_builtin: boolean;
+  sort_order: number;
+  hidden: boolean;
+  filter: Record<string, unknown>;
+  rank: Record<string, unknown>;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -332,6 +349,10 @@ function readableError(text: string, fallback: string) {
 export const api = {
   getItems: (query: URLSearchParams) => request<{ items: Item[]; total: number }>(`/api/items?${query.toString()}`),
   getItem: (id: string) => request<Item>(`/api/items/${id}`),
+  getFeedPresets: () => request<FeedPreset[]>("/api/feed-presets"),
+  createFeedPreset: (body: Record<string, unknown>) => request<FeedPreset>("/api/feed-presets", { method: "POST", body: JSON.stringify(body) }),
+  patchFeedPreset: (id: string, body: Record<string, unknown>) => request<FeedPreset>(`/api/feed-presets/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteFeedPreset: (id: string) => request<{ deleted: string }>(`/api/feed-presets/${id}`, { method: "DELETE" }),
   getSources: () => request<Source[]>("/api/source-definitions"),
   getSubscriptions: () => request<Array<{ source_id: string; subscribed: boolean }>>("/api/subscriptions"),
   subscribeSource: (id: string) => request<{ source_id: string; subscribed: boolean }>(`/api/subscriptions/${id}`, { method: "POST" }),
@@ -342,6 +363,8 @@ export const api = {
   fetchSource: (id: string) => request<{ job_id: number; status: string }>(`/api/sources/${id}/fetch`, { method: "POST" }),
   previewSource: (body: Record<string, unknown>) => request<Record<string, unknown>>("/api/sources/preview", { method: "POST", body: JSON.stringify(body) }),
   markItem: (id: string, action: "read" | "star") => request<Item>(`/api/items/${id}/${action}`, { method: "POST", body: JSON.stringify({}) }),
+  recordItemEvent: (id: string, event_type: "open" | "read" | "unread" | "star" | "unstar" | "hide" | "unhide", metadata: Record<string, unknown> = {}) =>
+    request<Record<string, unknown>>(`/api/items/${id}/events`, { method: "POST", body: JSON.stringify({ event_type, metadata }) }),
   resummarize: (id: string) => request<Item>(`/api/items/${id}/resummarize`, { method: "POST" }),
   health: () => request<Health>("/api/health"),
   settings: () => request<Record<string, unknown>>("/api/settings"),

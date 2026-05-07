@@ -43,6 +43,8 @@ Source Catalog
 - 启动时 API 会同步 catalog 到数据库。
 - 只有已订阅 source 会被 scheduler 抓取，并默认进入 feed。
 - Item 使用确定性 `dedupe_key` 做跨 source 去重；`item_sources` 是来源归属的事实表，source 过滤、订阅过滤、health 统计、source audit 和摘要队列都按它计算。
+- Feed 预设是独立视图层：内置预设来自 `config/feed-presets.yaml`，自定义预设保存在数据库；预设只解析成普通 feed filter，不改变订阅状态。
+- 推荐排序是 feed 排序层，基于 source 有效优先级、时效性和用户行为事件生成可解释分数，不改变去重或来源归属。
 - 每个 source 可以配置 `tagging` 策略：可信 feed 使用 entry category/tag，不可信 feed 可用 AI 生成主题标签，所有路径都会过滤明显的网页布局/CSS class 噪声。
 - item 入库不等待 AI 摘要完成。
 - 抓取、全文和摘要失败都应可观察，但不应阻断历史内容浏览。

@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import re
 from typing import Any
+from uuid import uuid4
 
 import yaml
 from sqlalchemy import Select, and_, delete, distinct, func, or_, select
@@ -10,7 +12,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.catalog import DEFAULT_SOURCE_PACK_PATH
 from app.config import Settings, get_settings
 from app.fulltext import extract_generic_article, strip_html
-from app.models import Fulltext, Item, ItemSource, Job, JobStatus, LLMProvider, LLMUsageEvent, RawEntry, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
+from app.models import FeedPreset, Fulltext, Item, ItemSource, Job, JobStatus, LLMProvider, LLMUsageEvent, RawEntry, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, UserItemEvent, utcnow
 from app.schemas import ItemOut, SourceAttemptIn, SourceAttemptOut, SourceDefinitionIn, SourceDefinitionOut, SourceDefinitionPatch, SourceOut, SourcePatch, SourceRuntimeOut, SourceIn
 from app.source_catalog import append_source_definition_to_catalog, definition_from_source, sync_source_catalog, update_source_definition_in_catalog, upsert_source_definition
 from app.subscriptions import subscribed_source_ids
@@ -20,6 +22,14 @@ from app.utils import canonicalize_url, dedupe_key_from_parts, dumps, extract_en
 
 
 LLM_TAG_MAX_PER_FETCH = 20
+FEED_PRESETS_PATH = Path(__file__).resolve().parent.parent / "config" / "feed-presets.yaml"
+
+PRIORITY_TIERS: dict[str, tuple[int, int | None, str]] = {
+    "p0": (0, 24, "P0 核心"),
+    "p1": (25, 74, "P1 重要"),
+    "p2": (75, 124, "P2 普通"),
+    "p3": (125, None, "P3 低频"),
+}
 
 
 @dataclass(frozen=True)
@@ -27,6 +37,46 @@ class TaggingResult:
     tags: list[str]
     generated: bool = False
     attempted: bool = False
+
+
+def effective_priority(source: Source) -> int:
+    subscription = getattr(source, "subscription", None)
+    override = subscription.priority_override if subscription else None
+    return int(override if override is not None else source.priority)
+
+
+def priority_tier(value: int | None) -> str:
+    priority = int(value if value is not None else 100)
+    for tier, (minimum, maximum, _label) in PRIORITY_TIERS.items():
+        if priority >= minimum and (maximum is None or priority <= maximum):
+            return tier
+    return "p2"
+
+
+def priority_tier_label(value: int | None) -> str:
+    return PRIORITY_TIERS[priority_tier(value)][2]
+
+
+def _priority_ranges(tiers: list[str] | None, priority_min: int | None, priority_max: int | None) -> list[tuple[int, int | None]]:
+    ranges: list[tuple[int, int | None]] = []
+    for tier in tiers or []:
+        normalized = tier.lower()
+        if normalized in PRIORITY_TIERS:
+            minimum, maximum, _label = PRIORITY_TIERS[normalized]
+            ranges.append((minimum, maximum))
+    if priority_min is not None or priority_max is not None:
+        ranges.append((0 if priority_min is None else priority_min, priority_max))
+    return ranges
+
+
+def _normalize_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    if isinstance(value, (tuple, set)):
+        return [str(item) for item in value if str(item)]
+    return [str(value)] if str(value) else []
 
 
 def load_source_pack(path: str | Path) -> list[SourceIn]:
@@ -45,6 +95,133 @@ def load_source_pack_payload(path: str | Path) -> dict[str, Any]:
 def load_retired_source_ids(path: str | Path) -> set[str]:
     payload = load_source_pack_payload(path)
     return {str(source_id) for source_id in payload.get("retired_source_ids", [])}
+
+
+def load_feed_preset_payload(path: str | Path = FEED_PRESETS_PATH) -> dict[str, Any]:
+    preset_path = Path(path)
+    if not preset_path.exists():
+        return {"schema_version": 1, "presets": []}
+    payload = yaml.safe_load(preset_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise ValueError(f"{preset_path} must declare schema_version: 1")
+    presets = payload.get("presets", [])
+    if not isinstance(presets, list):
+        raise ValueError("feed presets must be a list")
+    return payload
+
+
+def sync_feed_presets(db: Session, path: str | Path = FEED_PRESETS_PATH) -> int:
+    payload = load_feed_preset_payload(path)
+    count = 0
+    for index, raw in enumerate(payload.get("presets", [])):
+        if not isinstance(raw, dict):
+            continue
+        preset_id = str(raw.get("id") or "").strip()
+        name = str(raw.get("name") or preset_id).strip()
+        if not preset_id or not name:
+            continue
+        preset = db.get(FeedPreset, preset_id)
+        is_new = preset is None
+        if is_new:
+            preset = FeedPreset(id=preset_id, is_builtin=True)
+            db.add(preset)
+        preset.name = name
+        preset.description = str(raw.get("description") or "")
+        preset.is_builtin = True
+        if is_new:
+            preset.sort_order = int(raw.get("sort_order", index * 10) or 0)
+        preset.filter_json = dumps(raw.get("filter") or {})
+        preset.rank_json = dumps(raw.get("rank") or {"mode": "latest"})
+        count += 1
+    db.commit()
+    return count
+
+
+def feed_preset_to_dict(preset: FeedPreset) -> dict[str, Any]:
+    return {
+        "id": preset.id,
+        "name": preset.name,
+        "description": preset.description,
+        "is_builtin": preset.is_builtin,
+        "sort_order": preset.sort_order,
+        "hidden": preset.hidden,
+        "filter": loads(preset.filter_json, {}),
+        "rank": loads(preset.rank_json, {"mode": "latest"}),
+        "created_at": preset.created_at,
+        "updated_at": preset.updated_at,
+    }
+
+
+def list_feed_presets(db: Session, include_hidden: bool = False) -> list[dict[str, Any]]:
+    filters = [] if include_hidden else [FeedPreset.hidden.is_(False)]
+    rows = db.execute(select(FeedPreset).where(*filters).order_by(FeedPreset.sort_order, FeedPreset.name)).scalars().all()
+    return [feed_preset_to_dict(row) for row in rows]
+
+
+def create_feed_preset(db: Session, payload: dict[str, Any]) -> dict[str, Any]:
+    preset_id = _unique_preset_id(db, str(payload.get("id") or payload.get("name") or "custom"))
+    preset = FeedPreset(
+        id=preset_id,
+        name=str(payload.get("name") or "自定义预设").strip() or "自定义预设",
+        description=str(payload.get("description") or ""),
+        is_builtin=False,
+        sort_order=int(payload.get("sort_order", 100) or 100),
+        hidden=bool(payload.get("hidden", False)),
+        filter_json=dumps(payload.get("filter") or {}),
+        rank_json=dumps(payload.get("rank") or {"mode": "latest"}),
+    )
+    db.add(preset)
+    db.commit()
+    db.refresh(preset)
+    return feed_preset_to_dict(preset)
+
+
+def patch_feed_preset(db: Session, preset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    preset = db.get(FeedPreset, preset_id)
+    if not preset:
+        raise KeyError(preset_id)
+    if preset.is_builtin:
+        blocked = {"name", "description", "filter", "rank"} & {key for key, value in payload.items() if value is not None}
+        if blocked:
+            raise ValueError("Built-in presets only allow sort_order and hidden updates")
+    if payload.get("name") is not None:
+        preset.name = str(payload["name"]).strip() or preset.name
+    if payload.get("description") is not None:
+        preset.description = str(payload["description"])
+    if payload.get("sort_order") is not None:
+        preset.sort_order = int(payload["sort_order"])
+    if payload.get("hidden") is not None:
+        preset.hidden = bool(payload["hidden"])
+    if payload.get("filter") is not None:
+        preset.filter_json = dumps(payload["filter"])
+    if payload.get("rank") is not None:
+        preset.rank_json = dumps(payload["rank"])
+    db.commit()
+    db.refresh(preset)
+    return feed_preset_to_dict(preset)
+
+
+def delete_feed_preset(db: Session, preset_id: str) -> None:
+    preset = db.get(FeedPreset, preset_id)
+    if not preset:
+        raise KeyError(preset_id)
+    if preset.is_builtin:
+        raise ValueError("Built-in presets cannot be deleted")
+    db.delete(preset)
+    db.commit()
+
+
+def _unique_preset_id(db: Session, seed: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", seed.lower()).strip("-")
+    if not slug:
+        slug = f"custom-{uuid4().hex[:8]}"
+    candidate = slug[:80]
+    index = 2
+    while db.get(FeedPreset, candidate):
+        suffix = f"-{index}"
+        candidate = f"{slug[: 80 - len(suffix)]}{suffix}"
+        index += 1
+    return candidate
 
 
 def source_to_out(source: Source, latest_run: SourceRun | None = None) -> SourceOut:
@@ -93,6 +270,7 @@ def source_definition_to_out(source: Source, latest_run: SourceRun | None = None
     subscription = source.subscription
     runtime = source.runtime
     subscribed = bool(subscription and subscription.subscribed)
+    display_priority = effective_priority(source)
     attempts = [
         SourceAttemptIn(
             kind=attempt.kind,
@@ -108,6 +286,8 @@ def source_definition_to_out(source: Source, latest_run: SourceRun | None = None
     return SourceDefinitionOut(
         **definition.model_dump(),
         subscribed=subscribed,
+        effective_priority=display_priority,
+        priority_tier=priority_tier(display_priority),
         runtime=SourceRuntimeOut(
             last_run_at=runtime.last_run_at,
             last_success_at=runtime.last_success_at,
@@ -178,6 +358,8 @@ def item_to_out(item: Item, db: Session | None = None) -> ItemOut:
         starred=item.starred,
         hidden=item.hidden,
         summary_status=item.summary_status,
+        recommendation_score=getattr(item, "_recommendation_score", None),
+        recommendation_reasons=getattr(item, "_recommendation_reasons", []),
         sources=item_sources,
     )
 
@@ -391,6 +573,7 @@ def content_audit_for_source(source: Source, latest_run: SourceRun | None = None
 
 def sync_default_source_pack(db: Session) -> None:
     sync_source_catalog(db)
+    sync_feed_presets(db)
 
 
 def seed_builtin_sources(db: Session) -> None:
@@ -1001,11 +1184,96 @@ def reconcile_auto_summary_statuses(db: Session, settings: Settings, limit: int 
     return changed
 
 
+def resolve_item_query_params(
+    db: Session,
+    *,
+    preset_id: str | None = None,
+    source_id: list[str] | None = None,
+    source_group: list[str] | str | None = None,
+    platform: list[str] | str | None = None,
+    q: str | None = None,
+    since: str | None = None,
+    summary_status: str | None = None,
+    read: bool | None = None,
+    starred: bool | None = None,
+    hidden: bool | None = None,
+    priority_tier: list[str] | str | None = None,
+    priority_min: int | None = None,
+    priority_max: int | None = None,
+    rank: str | None = None,
+) -> dict[str, Any]:
+    resolved: dict[str, Any] = {
+        "source_id": None,
+        "source_group": None,
+        "platform": None,
+        "q": None,
+        "since": None,
+        "summary_status": None,
+        "read": None,
+        "starred": None,
+        "hidden": False,
+        "priority_tier": None,
+        "priority_min": None,
+        "priority_max": None,
+        "rank": "latest",
+    }
+    if preset_id:
+        preset = db.get(FeedPreset, preset_id)
+        if not preset:
+            raise KeyError(preset_id)
+        preset_filter = loads(preset.filter_json, {})
+        preset_rank = loads(preset.rank_json, {"mode": "latest"})
+        resolved.update(
+            {
+                "source_id": _normalize_list(preset_filter.get("source_ids") or preset_filter.get("source_id")) or None,
+                "source_group": _normalize_list(preset_filter.get("groups") or preset_filter.get("source_group")) or None,
+                "platform": _normalize_list(preset_filter.get("platforms") or preset_filter.get("platform")) or None,
+                "q": preset_filter.get("q"),
+                "since": preset_filter.get("since"),
+                "summary_status": preset_filter.get("summary_status"),
+                "read": preset_filter.get("read"),
+                "starred": preset_filter.get("starred"),
+                "hidden": preset_filter.get("hidden", False),
+                "priority_tier": _normalize_list(preset_filter.get("priority_tiers") or preset_filter.get("priority_tier")) or None,
+                "priority_min": preset_filter.get("priority_min"),
+                "priority_max": preset_filter.get("priority_max"),
+                "rank": str(preset_rank.get("mode") or "latest"),
+            }
+        )
+    overrides = {
+        "source_id": source_id,
+        "source_group": source_group,
+        "platform": platform,
+        "q": q,
+        "since": since,
+        "summary_status": summary_status,
+        "read": read,
+        "starred": starred,
+        "hidden": hidden,
+        "priority_tier": priority_tier,
+        "priority_min": priority_min,
+        "priority_max": priority_max,
+        "rank": rank,
+    }
+    for key, value in overrides.items():
+        if value is None:
+            continue
+        if key in {"source_id", "source_group", "platform", "priority_tier"}:
+            resolved[key] = _normalize_list(value) or None
+        else:
+            resolved[key] = value
+    if resolved["hidden"] is None:
+        resolved["hidden"] = False
+    if resolved["rank"] not in {"latest", "recommended"}:
+        resolved["rank"] = "latest"
+    return resolved
+
+
 def query_items(
     db: Session,
     source_id: list[str] | None = None,
-    source_group: str | None = None,
-    platform: str | None = None,
+    source_group: list[str] | str | None = None,
+    platform: list[str] | str | None = None,
     include_unsubscribed: bool = False,
     q: str | None = None,
     since: str | None = None,
@@ -1013,6 +1281,10 @@ def query_items(
     read: bool | None = None,
     starred: bool | None = None,
     hidden: bool | None = False,
+    priority_tier: list[str] | str | None = None,
+    priority_min: int | None = None,
+    priority_max: int | None = None,
+    rank: str = "latest",
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[Item], int]:
@@ -1025,13 +1297,17 @@ def query_items(
         filters.append(_item_has_source(subscribed_ids))
     if source_id:
         filters.append(_item_has_source(source_id))
-    if platform:
+    platforms = _normalize_list(platform)
+    if platforms:
         filters.append(
             select(ItemSource.id)
             .join(Source, Source.id == ItemSource.source_id)
-            .where(ItemSource.item_id == Item.id, Source.platform == platform)
+            .where(ItemSource.item_id == Item.id, Source.platform.in_(platforms))
             .exists()
         )
+    priority_ranges = _priority_ranges(_normalize_list(priority_tier), priority_min, priority_max)
+    if priority_ranges:
+        filters.append(_item_has_priority(priority_ranges))
     if summary_status:
         filters.append(Item.summary_status == summary_status)
     if read is not None:
@@ -1064,23 +1340,190 @@ def query_items(
                 .exists(),
             )
         )
-    if source_group:
+    source_groups = _normalize_list(source_group)
+    if source_groups:
         filters.append(
             select(ItemSource.id)
             .join(Source, Source.id == ItemSource.source_id)
-            .where(ItemSource.item_id == Item.id, Source.group == source_group)
+            .where(ItemSource.item_id == Item.id, Source.group.in_(source_groups))
             .exists()
         )
     if filters:
         stmt = stmt.where(and_(*filters))
     count_stmt = select(func.count()).select_from(stmt.subquery())
     total = db.execute(count_stmt).scalar_one()
+    if rank == "recommended":
+        rows = db.execute(stmt.order_by(Item.published_at.desc().nullslast(), Item.created_at.desc(), Item.id.desc())).scalars().all()
+        profile = _preference_profile(db)
+        for item in rows:
+            score, reasons = recommendation_for_item(db, item, profile)
+            setattr(item, "_recommendation_score", score)
+            setattr(item, "_recommendation_reasons", reasons)
+        rows.sort(key=lambda item: (getattr(item, "_recommendation_score", 0.0), _sort_datetime(item), item.id), reverse=True)
+        return rows[offset : offset + limit], total
     rows = db.execute(stmt.order_by(Item.published_at.desc().nullslast(), Item.created_at.desc()).offset(offset).limit(limit)).scalars().all()
     return rows, total
 
 
 def _item_has_source(source_ids: list[str]) -> Any:
     return select(ItemSource.id).where(ItemSource.item_id == Item.id, ItemSource.source_id.in_(source_ids)).exists()
+
+
+def _item_has_priority(ranges: list[tuple[int, int | None]]) -> Any:
+    priority_value = func.coalesce(SourceSubscription.priority_override, Source.priority)
+    range_filters = []
+    for minimum, maximum in ranges:
+        criteria = [priority_value >= minimum]
+        if maximum is not None:
+            criteria.append(priority_value <= maximum)
+        range_filters.append(and_(*criteria))
+    return (
+        select(ItemSource.id)
+        .join(Source, Source.id == ItemSource.source_id)
+        .outerjoin(SourceSubscription, SourceSubscription.source_id == Source.id)
+        .where(ItemSource.item_id == Item.id, or_(*range_filters))
+        .exists()
+    )
+
+
+def _sort_datetime(item: Item) -> datetime:
+    value = item.published_at or item.created_at
+    return _aware_datetime(value) or datetime.min.replace(tzinfo=timezone.utc)
+
+
+def record_item_event(db: Session, item_id: str, event_type: str, source_id: str = "", metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    item = db.get(Item, item_id)
+    if not item:
+        raise KeyError(item_id)
+    event = UserItemEvent(item_id=item_id, event_type=event_type, source_id=source_id or "", metadata_json=dumps(metadata or {}))
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    return item_event_to_dict(event)
+
+
+def item_event_to_dict(event: UserItemEvent) -> dict[str, Any]:
+    return {
+        "id": event.id,
+        "item_id": event.item_id,
+        "event_type": event.event_type,
+        "source_id": event.source_id,
+        "metadata": loads(event.metadata_json, {}),
+        "created_at": event.created_at,
+    }
+
+
+def recommendation_for_item(db: Session, item: Item, profile: dict[str, dict[str, float]] | None = None) -> tuple[float, list[str]]:
+    profile = profile or {}
+    score = 0.0
+    reasons: list[str] = []
+    source_rows = _item_source_priority_rows(db, item)
+    if source_rows:
+        best = min(source_rows, key=lambda row: row["priority"])
+        tier = priority_tier(best["priority"])
+        source_score = {"p0": 40.0, "p1": 25.0, "p2": 12.0, "p3": 4.0}.get(tier, 8.0)
+        score += source_score
+        reasons.append(f"{PRIORITY_TIERS[tier][2]} source: {best['source_name']}")
+    else:
+        score += 8.0
+    now = datetime.now(timezone.utc)
+    item_time = _sort_datetime(item)
+    age_days = max((now - item_time).total_seconds() / 86400, 0)
+    if age_days <= 1:
+        score += 20.0
+        reasons.append("recent: today")
+    elif age_days <= 3:
+        score += 12.0
+        reasons.append("recent: 3d")
+    elif age_days <= 7:
+        score += 6.0
+        reasons.append("recent: 7d")
+    tag_matches = _weighted_matches(loads(item.tags, []), profile.get("tags", {}), limit=3)
+    entity_matches = _weighted_matches(loads(item.entities, []), profile.get("entities", {}), limit=2)
+    source_matches = _weighted_matches([row["source_id"] for row in source_rows], profile.get("sources", {}), limit=2)
+    platform_matches = _weighted_matches([row["platform"] for row in source_rows] or [item.platform], profile.get("platforms", {}), limit=1)
+    content_matches = _weighted_matches([item.content_type], profile.get("content_types", {}), limit=1)
+    preference_score = sum(weight for _value, weight in [*tag_matches, *entity_matches, *source_matches, *platform_matches, *content_matches])
+    if preference_score:
+        score += preference_score
+        labels = [value for value, _weight in [*tag_matches, *entity_matches, *source_matches, *platform_matches, *content_matches]][:4]
+        reasons.append(f"matches: {', '.join(labels)}")
+    if item.read:
+        score -= 6.0
+        reasons.append("already read")
+    opened = db.execute(
+        select(func.count(UserItemEvent.id)).where(UserItemEvent.item_id == item.id, UserItemEvent.event_type == "open")
+    ).scalar_one()
+    if opened:
+        score -= 4.0
+        reasons.append("opened before")
+    return round(score, 3), reasons[:5]
+
+
+def _item_source_priority_rows(db: Session, item: Item) -> list[dict[str, Any]]:
+    rows = db.execute(
+        select(ItemSource, Source, SourceSubscription)
+        .join(Source, Source.id == ItemSource.source_id)
+        .outerjoin(SourceSubscription, SourceSubscription.source_id == Source.id)
+        .where(ItemSource.item_id == item.id)
+    ).all()
+    return [
+        {
+            "source_id": item_source.source_id,
+            "source_name": item_source.source_name or source.name,
+            "platform": source.platform,
+            "priority": int(subscription.priority_override if subscription and subscription.priority_override is not None else source.priority),
+        }
+        for item_source, source, subscription in rows
+    ]
+
+
+def _preference_profile(db: Session) -> dict[str, dict[str, float]]:
+    profile: dict[str, dict[str, float]] = {
+        "tags": {},
+        "entities": {},
+        "sources": {},
+        "platforms": {},
+        "content_types": {},
+    }
+    rows = db.execute(
+        select(UserItemEvent, Item)
+        .join(Item, Item.id == UserItemEvent.item_id)
+        .where(UserItemEvent.event_type.in_(["open", "read", "star", "hide"]))
+        .order_by(UserItemEvent.created_at.desc(), UserItemEvent.id.desc())
+        .limit(500)
+    ).all()
+    weights = {"star": 6.0, "open": 1.5, "read": 1.0, "hide": -8.0}
+    for event, item in rows:
+        weight = weights.get(event.event_type, 0.0)
+        if not weight:
+            continue
+        for tag in loads(item.tags, []):
+            _bump(profile["tags"], tag, weight)
+        for entity in loads(item.entities, []):
+            _bump(profile["entities"], entity, weight)
+        _bump(profile["platforms"], item.platform, weight)
+        _bump(profile["content_types"], item.content_type, weight)
+        for source in item_sources_for_item(db, item):
+            _bump(profile["sources"], source.get("source_id", ""), weight)
+    return profile
+
+
+def _bump(bucket: dict[str, float], key: str, weight: float) -> None:
+    normalized = str(key or "").strip().lower()
+    if normalized:
+        bucket[normalized] = bucket.get(normalized, 0.0) + weight
+
+
+def _weighted_matches(values: list[str], weights: dict[str, float], limit: int) -> list[tuple[str, float]]:
+    matches = []
+    for value in values:
+        normalized = str(value or "").strip().lower()
+        weight = weights.get(normalized, 0.0)
+        if weight > 0:
+            matches.append((str(value), min(weight, 12.0)))
+    matches.sort(key=lambda row: row[1], reverse=True)
+    return matches[:limit]
 
 
 async def persist_entries(db: Session, source: Source, entries: list[Any], settings: Settings) -> tuple[int, int, int]:

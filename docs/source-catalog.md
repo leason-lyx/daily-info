@@ -119,6 +119,14 @@ Source catalog 不能包含真实 secret 值。
 
 网页编辑也遵守同一规则：不要在 source 的标签、过滤词、URL、metadata 或 auth 字段里保存真实 secret。
 
+## Feed 预设与优先级
+
+Feed 首页支持用预设一键切换阅读视图。内置预设定义在 `config/feed-presets.yaml`，自定义预设保存在数据库。预设只保存筛选和排序偏好，不会自动订阅 source，也不会改变 catalog definition。
+
+source 优先级使用“数字越小越重要”的规则：P0 为 0-24，P1 为 25-74，P2 为 75-124，P3 为 125 及以上。默认展示优先使用订阅上的 `priority_override`，没有覆盖值时使用 source definition 的 `priority`。因为 item 会跨 source 去重，feed 的优先级和 group/source 过滤都按 `item_sources` 判断：只要任一来源命中筛选，这条 item 就会进入候选集。
+
+`rank=recommended` 是排序层，不是过滤层。第一版推荐分数来自 source 有效优先级、发布时间、read/star/open/hide 等用户行为事件以及标签/实体偏好；API 会返回可解释原因，便于继续调试推荐规则。
+
 ## 新增 Source 建议
 
 优先级：

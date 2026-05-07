@@ -6,7 +6,7 @@ Daily Info is a self-hosted reading desk for research papers, engineering blogs,
 
 ## Features
 
-- Unified feed for papers, blogs, and posts, with search, source filters, deterministic cross-source deduplication, summary status, read/star states, and source-aware cleaned/generated tags.
+- Unified feed for papers, blogs, and posts, with search, source and priority filters, one-click feed presets, deterministic cross-source deduplication, recommendation reasons, summary status, read/star states, and source-aware cleaned/generated tags.
 - Source Catalog backed by `config/sources/*.yaml`, with explicit subscriptions so only chosen sources are fetched and shown in the default feed.
 - Source preview and creation flow for RSS/Atom feeds, RSSHub routes, and HTML index fallback.
 - Background worker and scheduler for source fetching, fulltext extraction, and optional auto-summary jobs.
@@ -80,6 +80,8 @@ Catalog entries are opt-in:
 - Available but unsubscribed sources stay visible in the Source Catalog for discovery.
 
 When the same content appears in multiple sources, Daily Info stores one item keyed by `dedupe_key` and records every source in `item_sources`. Feed and API responses expose those origins through `sources[]`; the single `source_id/source_name` pair is the primary source for display.
+
+Feed presets live in `config/feed-presets.yaml` for built-in views and in the database for custom saved views. Presets resolve to normal feed filters, so source group, source id, priority tier, time window, and recommended/latest ranking all use the same `/api/items` path. Source priority uses `SourceSubscription.priority_override` when present, otherwise the catalog `Source.priority`; lower numbers are more important and map to P0-P3 in the UI.
 
 Source definition files may include fetch attempts, fulltext policy, summary policy, filters, tags, grouping, and metadata. They should not contain API keys, cookies, tokens, or other secrets, including when edited from the web UI. If a source eventually needs credentials, store only a secret reference in catalog metadata and keep the secret value in runtime configuration.
 

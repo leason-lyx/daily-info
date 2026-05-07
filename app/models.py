@@ -89,6 +89,21 @@ class SourceSubscription(Base):
     source: Mapped[Source] = relationship(back_populates="subscription")
 
 
+class FeedPreset(Base):
+    __tablename__ = "feed_presets"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=100)
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    filter_json: Mapped[str] = mapped_column(Text, default="{}")
+    rank_json: Mapped[str] = mapped_column(Text, default='{"mode":"latest"}')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class SourceRuntime(Base):
     __tablename__ = "source_runtimes"
 
@@ -205,6 +220,19 @@ class ItemSource(Base):
 
     item: Mapped[Item] = relationship(back_populates="sources")
     source: Mapped[Source] = relationship()
+
+
+class UserItemEvent(Base):
+    __tablename__ = "user_item_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), index=True)
+    event_type: Mapped[str] = mapped_column(String(40), index=True)
+    source_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    item: Mapped[Item] = relationship()
 
 
 class Fulltext(Base):

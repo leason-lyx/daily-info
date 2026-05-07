@@ -14,6 +14,11 @@ from app.jobs import schedule_auto_summaries, schedule_due_sources
 from app.models import Item, ItemSource, Job, JobStatus, LLMProvider, Source, SourceRun, SourceSubscription, Summary, SummaryStatus
 from app.schemas import (
     AiProviderTestResult,
+    FeedPresetIn,
+    FeedPresetOut,
+    FeedPresetPatch,
+    ItemEventIn,
+    ItemEventOut,
     ItemListOut,
     LLMProviderIn,
     PreviewRequest,
@@ -29,12 +34,16 @@ from app.schemas import (
 )
 from app.services import (
     content_audit_for_source,
+    create_feed_preset,
     create_source_definition,
+    delete_feed_preset,
     export_source_pack,
+    item_event_to_dict,
     import_source_pack,
     item_to_out,
     item_sources_for_item,
     ensure_initial_llm_provider,
+    list_feed_presets,
     list_source_definitions,
     list_llm_providers,
     load_runtime_settings,
@@ -42,11 +51,14 @@ from app.services import (
     llm_usage_stats,
     latest_runs,
     patch_source,
+    patch_feed_preset,
     patch_source_definition,
     query_items,
     queue_auto_summaries,
     queue_job,
+    record_item_event,
     reconcile_auto_summary_statuses,
+    resolve_item_query_params,
     sync_default_source_pack,
     source_content_stats,
     source_summary_stats,
@@ -84,20 +96,45 @@ Db = Annotated[Session, Depends(get_db)]
 @app.get("/api/items", response_model=ItemListOut)
 def get_items(
     db: Db,
+    preset_id: str | None = None,
     source_id: list[str] | None = Query(default=None),
-    source_group: str | None = None,
-    platform: str | None = None,
+    source_group: list[str] | None = Query(default=None),
+    platform: list[str] | None = Query(default=None),
     include_unsubscribed: bool = False,
     q: str | None = None,
     since: str | None = None,
     summary_status: str | None = None,
     read: bool | None = None,
     starred: bool | None = None,
-    hidden: bool | None = False,
+    hidden: bool | None = None,
+    priority_tier: list[str] | None = Query(default=None),
+    priority_min: int | None = Query(default=None, ge=0),
+    priority_max: int | None = Query(default=None, ge=0),
+    rank: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> ItemListOut:
-    items, total = query_items(db, source_id, source_group, platform, include_unsubscribed, q, since, summary_status, read, starred, hidden, limit, offset)
+    try:
+        resolved = resolve_item_query_params(
+            db,
+            preset_id=preset_id,
+            source_id=source_id,
+            source_group=source_group,
+            platform=platform,
+            q=q,
+            since=since,
+            summary_status=summary_status,
+            read=read,
+            starred=starred,
+            hidden=hidden,
+            priority_tier=priority_tier,
+            priority_min=priority_min,
+            priority_max=priority_max,
+            rank=rank,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Feed preset not found") from exc
+    items, total = query_items(db, include_unsubscribed=include_unsubscribed, limit=limit, offset=offset, **resolved)
     return ItemListOut(items=[item_to_out(item, db) for item in items], total=total)
 
 
@@ -114,8 +151,16 @@ def _set_item_flag(db: Session, item_id: str, field: str, value: bool | None):
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
     current = getattr(item, field)
-    setattr(item, field, (not current) if value is None else value)
+    next_value = (not current) if value is None else value
+    setattr(item, field, next_value)
     db.commit()
+    event_type = {
+        "read": "read" if next_value else "unread",
+        "starred": "star" if next_value else "unstar",
+        "hidden": "hide" if next_value else "unhide",
+    }.get(field)
+    if event_type:
+        record_item_event(db, item_id, event_type)
     return item_to_out(item, db)
 
 
@@ -134,6 +179,14 @@ def mark_hide(item_id: str, db: Db, value: bool | None = Body(default=None, embe
     return _set_item_flag(db, item_id, "hidden", value)
 
 
+@app.post("/api/items/{item_id}/events", response_model=ItemEventOut)
+def create_item_event(item_id: str, payload: ItemEventIn, db: Db):
+    try:
+        return ItemEventOut(**record_item_event(db, item_id, payload.event_type, payload.source_id, payload.metadata))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Item not found") from exc
+
+
 @app.post("/api/items/{item_id}/resummarize")
 def resummarize(item_id: str, db: Db):
     item = db.get(Item, item_id)
@@ -145,6 +198,37 @@ def resummarize(item_id: str, db: Db):
     if settings.llm_configured:
         queue_job(db, "summarize_item", {"item_id": item_id})
     return item_to_out(item, db)
+
+
+@app.get("/api/feed-presets", response_model=list[FeedPresetOut])
+def get_feed_presets(db: Db, include_hidden: bool = False):
+    return [FeedPresetOut(**preset) for preset in list_feed_presets(db, include_hidden=include_hidden)]
+
+
+@app.post("/api/feed-presets", response_model=FeedPresetOut)
+def create_feed_preset_endpoint(payload: FeedPresetIn, db: Db):
+    return FeedPresetOut(**create_feed_preset(db, payload.model_dump(mode="json", exclude_none=True)))
+
+
+@app.patch("/api/feed-presets/{preset_id}", response_model=FeedPresetOut)
+def update_feed_preset_endpoint(preset_id: str, payload: FeedPresetPatch, db: Db):
+    try:
+        return FeedPresetOut(**patch_feed_preset(db, preset_id, payload.model_dump(mode="json", exclude_unset=True)))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Feed preset not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/api/feed-presets/{preset_id}")
+def delete_feed_preset_endpoint(preset_id: str, db: Db):
+    try:
+        delete_feed_preset(db, preset_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Feed preset not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"deleted": preset_id}
 
 
 @app.get("/api/source-definitions", response_model=list[SourceDefinitionOut])
