@@ -27,7 +27,7 @@ The recommended local deployment path is Docker Compose.
 
 ```bash
 cp .env.example .env
-docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.localhost.yml up --build -d api worker scheduler web
 ```
 
 Open `http://localhost:3000`.
@@ -71,7 +71,7 @@ Secrets belong in `.env` or `.env.local`, never in source catalog files. The Doc
 
 ## Source Catalog
 
-Built-in source definitions live in `config/sources/*.yaml`. They are synchronized into the database at startup as catalog entries. The Source Catalog page can edit safe per-source options such as auto-summary policy, fetch interval, fulltext policy, tagging policy, default tags, filters, group, priority, and language; those edits are written back to the YAML file and then synchronized into the database.
+Built-in source definitions live in `config/sources/*.yaml`. They are read-only seed data synchronized into the database at startup as catalog entries. The Source Catalog page can edit safe per-source options such as auto-summary policy, fetch interval, fulltext policy, tagging policy, default tags, filters, group, priority, and language; runtime edits are stored in the database and do not modify repository YAML.
 
 Catalog entries are opt-in:
 
@@ -168,7 +168,7 @@ npm run build
 For acceptance testing, use Docker Compose so validation follows the same runtime path as local deployment:
 
 ```bash
-docker compose up --build -d --force-recreate api worker scheduler web
+docker compose -f docker-compose.yml -f docker-compose.localhost.yml up --build -d --force-recreate api worker scheduler web
 curl -fsS http://127.0.0.1:8000/api/health
 curl -fsS http://127.0.0.1:8000/api/source-definitions
 ```

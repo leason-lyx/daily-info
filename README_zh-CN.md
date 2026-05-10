@@ -27,7 +27,7 @@ Daily Info 是一个自托管的信息阅读台，用来聚合论文、工程博
 
 ```bash
 cp .env.example .env
-docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.localhost.yml up --build -d api worker scheduler web
 ```
 
 然后打开 `http://localhost:3000`。
@@ -71,7 +71,7 @@ Daily Info 从环境变量读取运行时配置，部分可在 UI 中修改的�
 
 ## Source Catalog
 
-内置信息源定义位于 `config/sources/*.yaml`。应用启动时会把它们同步进数据库，作为可浏览的 catalog。Source Catalog 页面可以编辑自动摘要策略、抓取周期、全文策略、标签策略、默认标签、过滤词、分组、优先级和语言等低风险配置；保存后会写回 YAML，再同步数据库。
+内置信息源定义位于 `config/sources/*.yaml`。应用启动时会把它们作为只读 seed 同步进数据库，形成可浏览的 catalog。Source Catalog 页面可以编辑自动摘要策略、抓取周期、全文策略、标签策略、默认标签、过滤词、分组、优先级和语言等低风险配置；运行时修改只保存到数据库，不会修改仓库 YAML。
 
 Catalog 是显式订阅模式：
 
@@ -168,7 +168,7 @@ npm run build
 验收测试建议使用 Docker Compose，这样验证路径和本地部署一致：
 
 ```bash
-docker compose up --build -d --force-recreate api worker scheduler web
+docker compose -f docker-compose.yml -f docker-compose.localhost.yml up --build -d --force-recreate api worker scheduler web
 curl -fsS http://127.0.0.1:8000/api/health
 curl -fsS http://127.0.0.1:8000/api/source-definitions
 ```

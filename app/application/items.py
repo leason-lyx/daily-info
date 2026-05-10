@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 
 from app.models import Item
-from app.services.legacy import ensure_user_item_state
+from app.services.core import ensure_user_item_state
 from app.services.presenters import item_state_flags, item_to_out
 from app.services.recommendations import record_item_event
 

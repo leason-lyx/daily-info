@@ -83,8 +83,8 @@ class Source(Base):
 class SourceSubscription(Base):
     __tablename__ = "source_subscriptions"
 
+    profile_id: Mapped[str] = mapped_column(String(80), primary_key=True, default=DEFAULT_PROFILE_ID)
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True)
-    profile_id: Mapped[str] = mapped_column(String(80), default=DEFAULT_PROFILE_ID, index=True)
     subscribed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     priority_override: Mapped[int | None] = mapped_column(Integer)
     settings_override: Mapped[str] = mapped_column(Text, default="{}")
@@ -198,9 +198,6 @@ class Item(Base):
     raw_text: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[str] = mapped_column(Text, default="[]")
     entities: Mapped[str] = mapped_column(Text, default="[]")
-    read: Mapped[bool] = mapped_column(Boolean, default=False)
-    starred: Mapped[bool] = mapped_column(Boolean, default=False)
-    hidden: Mapped[bool] = mapped_column(Boolean, default=False)
     summary_status: Mapped[str] = mapped_column(String(40), default=SummaryStatus.not_configured.value, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -405,24 +402,6 @@ class LLMUsageEvent(Base):
     usage_json: Mapped[str] = mapped_column(Text, default="{}")
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
-class Cluster(Base):
-    __tablename__ = "clusters"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    title: Mapped[str] = mapped_column(Text, default="")
-    reason: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
-class ClusterItem(Base):
-    __tablename__ = "cluster_items"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    cluster_id: Mapped[str] = mapped_column(ForeignKey("clusters.id", ondelete="CASCADE"), index=True)
-    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), index=True)
-    reason: Mapped[str] = mapped_column(Text, default="")
 
 
 class Setting(Base):

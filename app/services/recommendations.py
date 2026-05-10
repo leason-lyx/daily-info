@@ -1,6 +1,6 @@
 """Profile, candidate, scoring, trend, embedding, and cache helpers."""
 
-from app.services.legacy import (  # noqa: F401
+from app.services.core import (  # noqa: F401
     RECOMMENDATION_EMBEDDING_MODEL,
     RECOMMENDATION_MODEL_VERSION,
     RECOMMENDATION_PROFILE_ID,

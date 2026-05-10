@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronDown, ChevronUp, RefreshCcw } from "lucide-react";
-import { api, Health, HealthJob, LlmUsage } from "@/lib/api";
+import { healthApi } from "@/lib/apiDomains";
+import type { Health, HealthJob, LlmUsage } from "@/lib/api";
 
 const SECTION_LIMITS = {
   jobQueue: 5,
@@ -31,7 +32,7 @@ export default function HealthPage() {
   const reload = useCallback(async ({ showRefreshing = true } = {}) => {
     if (showRefreshing) setIsRefreshingHealth(true);
     try {
-      const data = await api.health();
+      const data = await healthApi.health();
       setHealth(data as Health);
       setHasLoadedHealth(true);
       setLoadError("");
@@ -44,7 +45,7 @@ export default function HealthPage() {
 
   useEffect(() => {
     let alive = true;
-    api.health()
+    healthApi.health()
       .then((data) => {
         if (!alive) return;
         setHealth(data as Health);

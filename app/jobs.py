@@ -9,10 +9,11 @@ from app.adapters import AdapterError, run_attempt
 from app.config import Settings, get_settings
 from app.context import DEFAULT_PROFILE_ID
 from app.db import SessionLocal
-from app.job_queue import enqueue_embed_item, enqueue_fetch_source, enqueue_refresh_trends, enqueue_score_recommendations
+from app.job_queue import enqueue_build_recommendation_profile, enqueue_embed_item, enqueue_fetch_source, enqueue_refresh_trends, enqueue_score_recommendations
 from app.models import Item, ItemSource, Job, JobStatus, Setting, Source, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
+from app.subscriptions import get_subscription
 from app.services.ingestion import persist_entries
-from app.services.legacy import queue_auto_summaries, reconcile_auto_summary_statuses, set_setting_value
+from app.services.core import queue_auto_summaries, reconcile_auto_summary_statuses, set_setting_value
 from app.services.llm_providers import load_runtime_settings, openai_summary_provider_chain
 from app.services.recommendations import (
     build_recommendation_profile,
@@ -34,7 +35,7 @@ def _aware(dt: datetime | None) -> datetime | None:
 
 async def fetch_source_job(db: Session, source_id: str, settings: Settings) -> SourceRun:
     source = db.execute(select(Source).options(selectinload(Source.attempts)).where(Source.id == source_id)).scalar_one()
-    subscription = db.get(SourceSubscription, source.id)
+    subscription = get_subscription(db, source.id)
     run = SourceRun(source_id=source.id, status="running")
     runtime = db.get(SourceRuntime, source.id)
     if not runtime:
@@ -66,13 +67,13 @@ async def fetch_source_job(db: Session, source_id: str, settings: Settings) -> S
         try:
             queued_before = _queued_summary_item_ids(db, source.id)
             result = await run_attempt(attempt, settings)
-            raw_count, item_count, fulltext_success = await persist_entries(db, source, result.entries, settings)
+            ingest_result = await persist_entries(db, source, result.entries, settings)
             queue_auto_summaries(db, settings, source_id=source.id, limit=20)
             queued_after = _queued_summary_item_ids(db, source.id)
-            run.status = "succeeded" if raw_count else "empty"
-            run.raw_count = raw_count
-            run.item_count = item_count
-            run.fulltext_success_count = fulltext_success
+            run.status = "succeeded" if ingest_result.raw_count else "empty"
+            run.raw_count = ingest_result.raw_count
+            run.item_count = ingest_result.item_count
+            run.fulltext_success_count = ingest_result.fulltext_success_count
             run.summary_queued_count = len(queued_after - queued_before)
             run.used_attempt_id = attempt.id
             run.used_rsshub_instance = result.used_rsshub_instance or ""
@@ -262,15 +263,13 @@ async def run_job(db: Session, job: Job, settings: Settings) -> None:
             embed_item(db, payload["item_id"])
         elif job.type == "refresh_external_trends":
             refresh_external_trends(db)
-            from app.services.legacy import queue_job
-
-            queue_job(db, "build_recommendation_profile", {"profile_id": DEFAULT_PROFILE_ID}, max_attempts=1, idempotency_key=f"build_recommendation_profile:{DEFAULT_PROFILE_ID}")
+            enqueue_build_recommendation_profile(db, payload["profile_id"])
         elif job.type == "build_recommendation_profile":
-            profile_id = payload.get("profile_id", DEFAULT_PROFILE_ID)
+            profile_id = payload["profile_id"]
             build_recommendation_profile(db, profile_id)
             enqueue_score_recommendations(db, profile_id)
         elif job.type == "score_recommendations":
-            score_recommendations(db, payload.get("profile_id", "default"))
+            score_recommendations(db, payload["profile_id"])
         else:
             raise RuntimeError(f"Unsupported job type: {job.type}")
         job.status = JobStatus.succeeded.value

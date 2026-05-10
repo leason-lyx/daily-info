@@ -126,22 +126,6 @@ class SourceDefinitionOut(SourceDefinitionIn):
     content_audit: dict[str, Any] = Field(default_factory=dict)
     spec_hash: str = ""
     catalog_file: str = ""
-    # Compatibility fields for existing UI surfaces while the frontend moves to
-    # catalog terminology.
-    name: str = ""
-    content_type: Literal["paper", "blog", "post"] = "blog"
-    homepage_url: str = ""
-    enabled: bool = False
-    is_builtin: bool = True
-    language_hint: str = "auto"
-    default_tags: list[str] = Field(default_factory=list)
-    include_keywords: list[str] = Field(default_factory=list)
-    exclude_keywords: list[str] = Field(default_factory=list)
-    attempts: list[SourceAttemptIn] = Field(default_factory=list)
-    auto_summary_enabled: bool = False
-    auto_summary_days: int = 7
-    auth_mode: str = "none"
-    stability_level: str = "stable"
 
 
 class FetchConfigPatch(BaseModel):
@@ -158,70 +142,6 @@ class SourceDefinitionPatch(BaseModel):
     summary: SummaryPolicyIn | None = None
     tagging: TaggingPolicyIn | None = None
     filters: ProcessingFiltersIn | None = None
-
-
-class SourceIn(BaseModel):
-    id: str
-    name: str
-    content_type: Literal["paper", "blog", "post"]
-    platform: str = ""
-    homepage_url: str = ""
-    enabled: bool = False
-    group: str = "General"
-    priority: int = 100
-    poll_interval: int = 3600
-    auto_summary_enabled: bool | None = None
-    auto_summary_days: int = Field(default=7, ge=1)
-    language_hint: str = "auto"
-    include_keywords: list[str] = Field(default_factory=list)
-    exclude_keywords: list[str] = Field(default_factory=list)
-    default_tags: list[str] = Field(default_factory=list)
-    attempts: list[SourceAttemptIn] = Field(default_factory=list)
-    fulltext: dict[str, Any] = Field(default_factory=lambda: {"strategy": "feed_field"})
-    tagging: TaggingPolicyIn = Field(default_factory=TaggingPolicyIn)
-    auth_mode: str = "none"
-    stability_level: str = "stable"
-
-    @model_validator(mode="after")
-    def default_auto_summary_enabled(self):
-        if self.auto_summary_enabled is None:
-            self.auto_summary_enabled = self.content_type in {"blog", "post"}
-        return self
-
-
-class SourcePatch(BaseModel):
-    name: str | None = None
-    content_type: Literal["paper", "blog", "post"] | None = None
-    platform: str | None = None
-    homepage_url: str | None = None
-    enabled: bool | None = None
-    group: str | None = None
-    priority: int | None = None
-    poll_interval: int | None = None
-    auto_summary_enabled: bool | None = None
-    auto_summary_days: int | None = Field(default=None, ge=1)
-    language_hint: str | None = None
-    include_keywords: list[str] | None = None
-    exclude_keywords: list[str] | None = None
-    default_tags: list[str] | None = None
-    attempts: list[SourceAttemptIn] | None = None
-    fulltext: dict[str, Any] | None = None
-    tagging: TaggingPolicyIn | None = None
-    auth_mode: str | None = None
-    stability_level: str | None = None
-
-
-class SourceAttemptOut(SourceAttemptIn):
-    id: int | None = None
-
-
-class SourceOut(SourceIn):
-    auto_summary_enabled: bool = False
-    auto_summary_days: int = 7
-    is_builtin: bool = False
-    attempts: list[SourceAttemptOut] = Field(default_factory=list)
-    latest_run: dict[str, Any] | None = None
-    content_audit: dict[str, Any] = Field(default_factory=dict)
 
 
 class PreviewRequest(BaseModel):

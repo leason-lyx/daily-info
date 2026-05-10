@@ -3,7 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Eye, Play, Plus, RefreshCcw, Save, Search, SlidersHorizontal, X } from "lucide-react";
-import { api, Source, SourceDefinitionPatchInput } from "@/lib/api";
+import { sourcesApi } from "@/lib/apiDomains";
+import type { Source, SourceDefinitionPatchInput } from "@/lib/api";
 
 type Filters = {
   q: string;
@@ -62,7 +63,7 @@ export default function SourcesPage() {
   const reload = useCallback(async ({ clearMessageOnSuccess = true, showRefreshing = true } = {}) => {
     if (showRefreshing) setIsRefreshingSources(true);
     try {
-      setSources(await api.getSources());
+      setSources(await sourcesApi.getSources());
       setHasLoadedSources(true);
       setLoadError("");
       if (clearMessageOnSuccess) setMessage("");
@@ -75,7 +76,7 @@ export default function SourcesPage() {
 
   useEffect(() => {
     let alive = true;
-    api.getSources()
+    sourcesApi.getSources()
       .then((rows) => {
         if (!alive) return;
         setSources(rows);
@@ -93,9 +94,9 @@ export default function SourcesPage() {
   const facets = useMemo(() => {
     return {
       groups: uniqueSorted(sources.map(sourceGroupName)),
-      kinds: uniqueSorted(sources.map((source) => source.kind || source.content_type)),
+      kinds: uniqueSorted(sources.map((source) => source.kind)),
       platforms: uniqueSorted(sources.map((source) => source.platform).filter(Boolean)),
-      languages: uniqueSorted(sources.map((source) => source.language || source.language_hint || "auto")),
+      languages: uniqueSorted(sources.map((source) => source.language || "auto")),
     };
   }, [sources]);
 
@@ -103,11 +104,11 @@ export default function SourcesPage() {
     const q = filters.q.trim().toLowerCase();
     return sources.filter((source) => {
       if (filters.group && sourceGroupName(source) !== filters.group) return false;
-      if (filters.kind && (source.kind || source.content_type) !== filters.kind) return false;
+      if (filters.kind && source.kind !== filters.kind) return false;
       if (filters.platform && source.platform !== filters.platform) return false;
-      if (filters.language && (source.language || source.language_hint || "auto") !== filters.language) return false;
+      if (filters.language && (source.language || "auto") !== filters.language) return false;
       if (!q) return true;
-      return [source.title, source.name, source.id, source.platform, source.group, ...(source.default_tags || [])]
+      return [source.title, source.id, source.platform, source.group, ...source.tags]
         .join(" ")
         .toLowerCase()
         .includes(q);
@@ -138,15 +139,15 @@ export default function SourcesPage() {
     setMessage("");
     try {
       if (source.subscribed) {
-        await api.unsubscribeSource(source.id);
-        setMessage(`Unsubscribed ${source.title || source.name}. It will no longer be fetched or shown in the default feed.`);
+        await sourcesApi.unsubscribeSource(source.id);
+        setMessage(`Unsubscribed ${source.title}. It will no longer be fetched or shown in the default feed.`);
       } else {
-        await api.subscribeSource(source.id);
-        setMessage(`Subscribed ${source.title || source.name}. It is now eligible for fetch and feed display.`);
+        await sourcesApi.subscribeSource(source.id);
+        setMessage(`Subscribed ${source.title}. It is now eligible for fetch and feed display.`);
       }
       await reload({ clearMessageOnSuccess: false });
     } catch (err) {
-      setMessage(`Could not update ${source.title || source.name}: ${errorMessage(err)}`);
+      setMessage(`Could not update ${source.title}: ${errorMessage(err)}`);
     } finally {
       finishPending(actionId);
     }
@@ -159,10 +160,10 @@ export default function SourcesPage() {
     try {
       const attempt = source.fetch?.attempts?.[0];
       if (!attempt) throw new Error("This source has no fetch attempts.");
-      const result = await api.previewSource({ attempt });
+      const result = await sourcesApi.previewSource({ attempt });
       setMessage(JSON.stringify(result, null, 2));
     } catch (err) {
-      setMessage(`Could not preview ${source.title || source.name}: ${errorMessage(err)}`);
+      setMessage(`Could not preview ${source.title}: ${errorMessage(err)}`);
     } finally {
       finishPending(actionId);
     }
@@ -173,11 +174,11 @@ export default function SourcesPage() {
     startPending(actionId);
     setMessage("");
     try {
-      const result = await api.fetchSource(source.id);
-      setMessage(`Queued ${source.title || source.name} fetch job ${result.job_id}.`);
+      const result = await sourcesApi.fetchSource(source.id);
+      setMessage(`Queued ${source.title} fetch job ${result.job_id}.`);
       await reload({ clearMessageOnSuccess: false });
     } catch (err) {
-      setMessage(`Could not fetch ${source.title || source.name}: ${errorMessage(err)}`);
+      setMessage(`Could not fetch ${source.title}: ${errorMessage(err)}`);
     } finally {
       finishPending(actionId);
     }
@@ -205,8 +206,8 @@ export default function SourcesPage() {
     setMessage("");
     try {
       const body = patchFromEditor(editor, source);
-      await api.patchSourceDefinition(source.id, body);
-      setMessage(`Saved ${sourceTitle(source)} to YAML and synchronized the database.`);
+      await sourcesApi.patchSourceDefinition(source.id, body);
+      setMessage(`Saved ${sourceTitle(source)} to the database catalog.`);
       await reload({ clearMessageOnSuccess: false });
       setEditingSourceId(null);
       setEditor(null);
@@ -355,7 +356,7 @@ function SourceConfigEditor({
             <X size={16} /> Cancel
           </button>
           <button className="button compact primary" onClick={onSave} disabled={saving}>
-            <Save size={16} /> {saving ? "Saving..." : "Save YAML"}
+            <Save size={16} /> {saving ? "Saving..." : "Save"}
           </button>
         </div>
       </div>
@@ -480,11 +481,11 @@ function SelectFilter({ id, label, value, options, onChange }: { id: string; lab
 
 function SourceMetadata({ source }: { source: Source }) {
   const summary = source.summary?.auto ? `Auto summary · ${source.summary.window_days || 7}d` : "Manual summary";
-  const fetchInterval = source.fetch?.interval_seconds || source.poll_interval;
+  const fetchInterval = source.fetch?.interval_seconds;
   return (
     <div className="sourceDetails">
       <div className="sourcePillGroup">
-        <span className="sourcePill strong">{source.kind || source.content_type}</span>
+        <span className="sourcePill strong">{source.kind}</span>
         {source.platform ? <span className="sourcePill">{source.platform}</span> : null}
         <span className="sourcePill">{sourceGroupName(source)}</span>
         <span className="sourcePill priorityPill">{priorityLabel(source)}</span>
@@ -626,7 +627,7 @@ function sourceGroupName(source: Source) {
 }
 
 function sourceTitle(source: Source) {
-  return source.title || source.name || source.id;
+  return source.title || source.id;
 }
 
 function priorityLabel(source: Source) {
@@ -659,20 +660,20 @@ function errorMessage(err: unknown) {
 function editorFromSource(source: Source): SourceEditorState {
   const fulltext = source.fulltext || {};
   return {
-    autoSummary: Boolean(source.summary?.auto ?? source.auto_summary_enabled),
-    summaryWindowDays: String(source.summary?.window_days || source.auto_summary_days || 7),
-    intervalSeconds: String(source.fetch?.interval_seconds || source.poll_interval || 3600),
+    autoSummary: Boolean(source.summary?.auto),
+    summaryWindowDays: String(source.summary?.window_days || 7),
+    intervalSeconds: String(source.fetch?.interval_seconds || 3600),
     fulltextMode: fulltextMode(fulltext),
     minFeedChars: String(numberValue(fulltext.min_feed_chars, 1200)),
     maxDetailPages: String(numberValue(fulltext.max_detail_pages_per_run, 20)),
     taggingMode: source.tagging?.mode || "llm",
     maxTags: String(source.tagging?.max_tags || 5),
-    tagsText: (source.default_tags || source.tags || []).join("\n"),
-    includeText: (source.include_keywords || []).join("\n"),
-    excludeText: (source.exclude_keywords || []).join("\n"),
+    tagsText: source.tags.join("\n"),
+    includeText: (source.filters?.include_keywords || []).join("\n"),
+    excludeText: (source.filters?.exclude_keywords || []).join("\n"),
     group: source.group || "General",
     priority: String(source.priority ?? 100),
-    language: source.language || source.language_hint || "auto",
+    language: source.language || "auto",
   };
 }
 
@@ -682,7 +683,7 @@ function patchFromEditor(editor: SourceEditorState, source: Source): SourceDefin
     tags: splitList(editor.tagsText),
     group: editor.group.trim() || "General",
     priority: positiveInteger(editor.priority, source.priority ?? 100, 0),
-    fetch: { interval_seconds: positiveInteger(editor.intervalSeconds, source.fetch?.interval_seconds || source.poll_interval || 3600, 60) },
+    fetch: { interval_seconds: positiveInteger(editor.intervalSeconds, source.fetch?.interval_seconds || 3600, 60) },
     fulltext: {
       mode: editor.fulltextMode,
       min_feed_chars: positiveInteger(editor.minFeedChars, 1200, 0),
@@ -693,7 +694,7 @@ function patchFromEditor(editor: SourceEditorState, source: Source): SourceDefin
     },
     summary: {
       auto: editor.autoSummary,
-      window_days: positiveInteger(editor.summaryWindowDays, source.summary?.window_days || source.auto_summary_days || 7, 1),
+      window_days: positiveInteger(editor.summaryWindowDays, source.summary?.window_days || 7, 1),
     },
     tagging: {
       mode: editor.taggingMode,

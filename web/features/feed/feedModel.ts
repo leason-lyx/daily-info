@@ -140,7 +140,7 @@ export function sourceIdsForItemsQuery(sourceRows: Source[], sourceParams: strin
 }
 
 export function sourceGroupName(source: Source) {
-  return source.group || CONTENT_TYPE_LABELS[source.content_type] || "General";
+  return source.group || CONTENT_TYPE_LABELS[source.kind] || "General";
 }
 
 export function sourceGroupRank(groupName: string) {
@@ -183,4 +183,3 @@ export function itemQueryFromFilters(searchParams: URLSearchParams, sourceRows: 
   }
   return next;
 }
-

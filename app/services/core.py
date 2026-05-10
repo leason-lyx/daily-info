@@ -4,22 +4,20 @@ import hashlib
 import math
 from pathlib import Path
 import re
-import sys
 from typing import Any
 from uuid import uuid4
 
 import httpx
 import yaml
-from sqlalchemy import Select, and_, delete, distinct, func, or_, select, update
+from sqlalchemy import Select, and_, distinct, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
-from app.catalog import DEFAULT_SOURCE_PACK_PATH
 from app.config import Settings, get_settings
 from app.fulltext import extract_generic_article, strip_html
 from app.job_queue import enqueue_embed_item, enqueue_summarize_item
-from app.context import DEFAULT_PROFILE_ID, ProfileContext
-from app.models import ExternalTrendSignal, FeedPreset, Fulltext, Item, ItemEmbedding, ItemRecommendationScore, ItemSource, Job, JobStatus, LLMProvider, LLMUsageEvent, RawEntry, RecommendationRun, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, UserItemEvent, UserItemState, UserPreference, utcnow
-from app.schemas import ItemOut, SourceAttemptIn, SourceAttemptOut, SourceDefinitionIn, SourceDefinitionOut, SourceDefinitionPatch, SourceOut, SourcePatch, SourceRuntimeOut, SourceIn
+from app.context import DEFAULT_PROFILE_ID
+from app.models import ExternalTrendSignal, FeedPreset, Fulltext, Item, ItemEmbedding, ItemRecommendationScore, ItemSource, Job, JobStatus, LLMProvider, LLMUsageEvent, RawEntry, RecommendationRun, Setting, Source, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, UserItemEvent, UserItemState, UserPreference, utcnow
+from app.schemas import ItemOut, SourceDefinitionIn, SourceDefinitionOut, SourceDefinitionPatch, SourceRuntimeOut
 from app.source_catalog import apply_source_definition_patch, definition_from_source, sync_source_catalog, upsert_source_definition
 from app.subscriptions import subscribed_source_ids
 from app.summary import generate_tags_codex_cli, generate_tags_openai_compatible
@@ -70,14 +68,6 @@ class IngestResult:
     touched_item_ids: set[str]
     work_intents: list[WorkIntent]
 
-    def __iter__(self):
-        yield self.raw_count
-        yield self.item_count
-        yield self.fulltext_success_count
-
-    def __getitem__(self, index: int) -> int:
-        return (self.raw_count, self.item_count, self.fulltext_success_count)[index]
-
 
 def effective_priority(source: Source) -> int:
     subscription = getattr(source, "subscription", None)
@@ -117,24 +107,6 @@ def _normalize_list(value: Any) -> list[str]:
     if isinstance(value, (tuple, set)):
         return [str(item) for item in value if str(item)]
     return [str(value)] if str(value) else []
-
-
-def load_source_pack(path: str | Path) -> list[SourceIn]:
-    payload = load_source_pack_payload(path)
-    return [SourceIn.model_validate(raw) for raw in payload.get("sources", [])]
-
-
-def load_source_pack_payload(path: str | Path) -> dict[str, Any]:
-    with Path(path).open("r", encoding="utf-8") as handle:
-        payload = yaml.safe_load(handle) or {}
-    if not isinstance(payload, dict):
-        raise ValueError(f"Source pack must be a mapping: {path}")
-    return payload
-
-
-def load_retired_source_ids(path: str | Path) -> set[str]:
-    payload = load_source_pack_payload(path)
-    return {str(source_id) for source_id in payload.get("retired_source_ids", [])}
 
 
 def load_feed_preset_payload(path: str | Path = FEED_PRESETS_PATH) -> dict[str, Any]:
@@ -264,46 +236,6 @@ def _unique_preset_id(db: Session, seed: str) -> str:
     return candidate
 
 
-def source_to_out(source: Source, latest_run: SourceRun | None = None) -> SourceOut:
-    return SourceOut(
-        id=source.id,
-        name=source.name,
-        content_type=source.content_type,
-        platform=source.platform,
-        homepage_url=source.homepage_url,
-        enabled=source.enabled,
-        is_builtin=source.is_builtin,
-        group=source.group,
-        priority=source.priority,
-        poll_interval=source.poll_interval,
-        auto_summary_enabled=source.auto_summary_enabled,
-        auto_summary_days=source.auto_summary_days,
-        language_hint=source.language_hint,
-        include_keywords=loads(source.include_keywords, []),
-        exclude_keywords=loads(source.exclude_keywords, []),
-        default_tags=loads(source.default_tags, []),
-        attempts=[
-            SourceAttemptOut(
-                id=attempt.id,
-                kind=attempt.kind,
-                adapter=attempt.adapter,
-                url=attempt.url,
-                route=attempt.route,
-                priority=attempt.priority,
-                enabled=attempt.enabled,
-                config=loads(attempt.config, {}),
-            )
-            for attempt in source.attempts
-        ],
-        fulltext=loads(source.fulltext, {"strategy": "feed_field"}),
-        tagging=normalize_tagging_config(loads(source.tagging, {})),
-        auth_mode=source.auth_mode,
-        stability_level=source.stability_level,
-        latest_run=run_to_dict(latest_run) if latest_run else None,
-        content_audit=content_audit_for_source(source, latest_run),
-    )
-
-
 def source_definition_to_out(source: Source, latest_run: SourceRun | None = None, stats: dict[str, Any] | None = None) -> SourceDefinitionOut:
     stats = stats or {}
     definition = definition_from_source(source)
@@ -311,18 +243,6 @@ def source_definition_to_out(source: Source, latest_run: SourceRun | None = None
     runtime = source.runtime
     subscribed = bool(subscription and subscription.subscribed)
     display_priority = effective_priority(source)
-    attempts = [
-        SourceAttemptIn(
-            kind=attempt.kind,
-            adapter=attempt.adapter,
-            url=attempt.url,
-            route=attempt.route,
-            priority=attempt.priority,
-            enabled=attempt.enabled,
-            config=loads(attempt.config, {}),
-        )
-        for attempt in source.attempts
-    ]
     return SourceDefinitionOut(
         **definition.model_dump(),
         subscribed=subscribed,
@@ -344,20 +264,6 @@ def source_definition_to_out(source: Source, latest_run: SourceRun | None = None
         content_audit=content_audit_for_source(source, latest_run, stats),
         spec_hash=source.spec_hash,
         catalog_file=source.catalog_file,
-        name=definition.title,
-        content_type=definition.kind,
-        homepage_url=definition.homepage,
-        enabled=subscribed,
-        is_builtin=source.is_builtin,
-        language_hint=definition.language,
-        default_tags=definition.tags,
-        include_keywords=definition.filters.include_keywords,
-        exclude_keywords=definition.filters.exclude_keywords,
-        attempts=attempts,
-        auto_summary_enabled=bool(definition.summary.auto if definition.summary else False),
-        auto_summary_days=int(definition.summary.window_days if definition.summary else 7),
-        auth_mode=definition.auth.mode,
-        stability_level=definition.stability,
     )
 
 
@@ -395,9 +301,9 @@ def ensure_user_item_state(db: Session, item_id: str, profile_id: str = RECOMMEN
 def item_state_flags(db: Session | None, item: Item, profile_id: str = RECOMMENDATION_PROFILE_ID) -> dict[str, bool]:
     state = get_user_item_state(db, item.id, profile_id) if db else None
     return {
-        "read": bool(state.read if state else item.read),
-        "starred": bool(state.starred if state else item.starred),
-        "hidden": bool(state.hidden if state else item.hidden),
+        "read": bool(state.read if state else False),
+        "starred": bool(state.starred if state else False),
+        "hidden": bool(state.hidden if state else False),
     }
 
 
@@ -647,156 +553,6 @@ def seed_builtin_sources(db: Session) -> None:
     sync_default_source_pack(db)
 
 
-def sync_source_pack(db: Session, sources: list[SourceIn], builtin: bool = False) -> int:
-    count = 0
-    for entry in sources:
-        existing = db.get(Source, entry.id)
-        if existing:
-            if builtin:
-                sync_known_builtin_source(db, existing, entry)
-            else:
-                patch_source(db, existing, SourcePatch(**entry.model_dump(exclude={"id"})))
-            count += 1
-            continue
-        source = create_source_model(entry, is_builtin=builtin)
-        db.add(source)
-        count += 1
-    return count
-
-
-def cleanup_retired_sources(db: Session, retired_ids: set[str]) -> None:
-    for source_id in retired_ids:
-        source = db.get(Source, source_id)
-        if not source or not source.is_builtin:
-            continue
-        affected_item_ids = list(db.execute(select(ItemSource.item_id).where(ItemSource.source_id == source_id)).scalars())
-        jobs = db.execute(select(Job)).scalars().all()
-        for job in jobs:
-            payload = loads(job.payload, {})
-            if payload.get("source_id") == source_id:
-                db.delete(job)
-        db.execute(delete(ItemSource).where(ItemSource.source_id == source_id))
-        orphan_item_ids: list[str] = []
-        for item_id in affected_item_ids:
-            item = db.get(Item, item_id)
-            if not item:
-                continue
-            replacement = db.execute(
-                select(ItemSource, Source)
-                .join(Source, Source.id == ItemSource.source_id)
-                .where(ItemSource.item_id == item_id)
-                .order_by(ItemSource.first_seen_at, ItemSource.id)
-                .limit(1)
-            ).first()
-            if replacement:
-                item_source, replacement_source = replacement
-                item.source_id = item_source.source_id
-                item.source_name = item_source.source_name or replacement_source.name
-                item.platform = replacement_source.platform
-                item.content_type = replacement_source.content_type
-                item.url = item_source.url or item.url
-                item.canonical_url = item_source.canonical_url or item.canonical_url
-                item.tags = dumps(_merged_item_source_tags(db, item_id))
-            else:
-                orphan_item_ids.append(item_id)
-        for job in jobs:
-            payload = loads(job.payload, {})
-            if payload.get("item_id") in orphan_item_ids:
-                db.delete(job)
-        if orphan_item_ids:
-            db.execute(delete(Summary).where(Summary.item_id.in_(orphan_item_ids)))
-            db.execute(delete(Fulltext).where(Fulltext.item_id.in_(orphan_item_ids)))
-            db.execute(delete(Item).where(Item.id.in_(orphan_item_ids)))
-        db.flush()
-        db.execute(delete(RawEntry).where(RawEntry.source_id == source_id))
-        db.execute(delete(SourceRun).where(SourceRun.source_id == source_id))
-        db.execute(delete(SourceAttempt).where(SourceAttempt.source_id == source_id))
-        db.delete(source)
-    db.flush()
-
-
-def _merged_item_source_tags(db: Session, item_id: str) -> list[str]:
-    tag_rows = db.execute(select(ItemSource.tags).where(ItemSource.item_id == item_id)).scalars()
-    return _merge_list_values(*[loads(tags, []) for tags in tag_rows])
-
-
-def sync_known_builtin_source(db: Session, source: Source, builtin: SourceIn) -> None:
-    if not source.is_builtin:
-        return
-    return
-
-
-def create_source_model(data: SourceIn, is_builtin: bool = False) -> Source:
-    source = Source(
-        id=data.id,
-        name=data.name,
-        content_type=data.content_type,
-        platform=data.platform,
-        homepage_url=data.homepage_url,
-        enabled=data.enabled,
-        is_builtin=is_builtin,
-        group=data.group,
-        priority=data.priority,
-        poll_interval=data.poll_interval,
-        auto_summary_enabled=bool(data.auto_summary_enabled),
-        auto_summary_days=data.auto_summary_days,
-        language_hint=data.language_hint,
-        include_keywords=dumps(data.include_keywords),
-        exclude_keywords=dumps(data.exclude_keywords),
-        default_tags=dumps(data.default_tags),
-        fulltext=dumps(data.fulltext),
-        tagging=dumps(data.tagging.model_dump(mode="json")),
-        auth_mode=data.auth_mode,
-        stability_level=data.stability_level,
-    )
-    source.attempts = [attempt_model(attempt) for attempt in data.attempts]
-    return source
-
-
-def attempt_model(data: SourceAttemptIn) -> SourceAttempt:
-    return SourceAttempt(
-        kind=data.kind,
-        adapter=data.adapter,
-        url=data.url,
-        route=data.route,
-        priority=data.priority,
-        enabled=data.enabled,
-        config=dumps(data.config),
-    )
-
-
-def patch_source(db: Session, source: Source, patch: SourcePatch) -> Source:
-    for field in [
-        "name",
-        "content_type",
-        "platform",
-        "homepage_url",
-        "enabled",
-        "group",
-        "priority",
-        "poll_interval",
-        "auto_summary_enabled",
-        "auto_summary_days",
-        "language_hint",
-        "auth_mode",
-        "stability_level",
-    ]:
-        value = getattr(patch, field)
-        if value is not None:
-            setattr(source, field, value)
-    for field in ["include_keywords", "exclude_keywords", "default_tags", "fulltext", "tagging"]:
-        value = getattr(patch, field)
-        if value is not None:
-            if hasattr(value, "model_dump"):
-                value = value.model_dump(mode="json")
-            setattr(source, field, dumps(value))
-    if patch.attempts is not None:
-        source.attempts.clear()
-        db.flush()
-        source.attempts = [attempt_model(attempt) for attempt in patch.attempts]
-    return source
-
-
 def latest_runs(db: Session) -> dict[str, SourceRun]:
     subq = select(SourceRun.source_id, func.max(SourceRun.id).label("id")).group_by(SourceRun.source_id).subquery()
     rows = db.execute(select(SourceRun).join(subq, SourceRun.id == subq.c.id)).scalars().all()
@@ -1020,18 +776,6 @@ def llm_usage_stats(db: Session) -> dict[str, Any]:
     }
 
 
-def list_sources(db: Session) -> list[SourceOut]:
-    runs = latest_runs(db)
-    stats = source_content_stats(db)
-    sources = db.execute(select(Source).options(selectinload(Source.attempts)).order_by(Source.group, Source.priority)).scalars().all()
-    return [
-        source_to_out(source, runs.get(source.id)).model_copy(
-            update={"content_audit": content_audit_for_source(source, runs.get(source.id), stats.get(source.id))}
-        )
-        for source in sources
-    ]
-
-
 def list_source_definitions(db: Session) -> list[SourceDefinitionOut]:
     runs = latest_runs(db)
     stats = source_content_stats(db)
@@ -1065,42 +809,6 @@ def patch_source_definition(db: Session, source: Source, patch: SourceDefinition
     db.commit()
     db.refresh(source)
     return source_definition_to_out(source)
-
-
-def queue_job(
-    db: Session,
-    job_type: str,
-    payload: dict[str, Any],
-    max_attempts: int = 3,
-    *,
-    idempotency_key: str = "",
-    queue: str = "default",
-    priority: int = 100,
-) -> Job:
-    rendered_payload = dumps(payload)
-    existing = db.execute(
-        select(Job).where(
-            Job.type == job_type,
-            Job.idempotency_key == idempotency_key if idempotency_key else Job.payload == rendered_payload,
-            Job.status.in_(["queued", "running", "retrying"]),
-        )
-    ).scalar_one_or_none()
-    if existing:
-        setattr(existing, "_queue_created", False)
-        return existing
-    job = Job(
-        type=job_type,
-        payload=rendered_payload,
-        max_attempts=max_attempts,
-        idempotency_key=idempotency_key,
-        queue=queue,
-        priority=priority,
-    )
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-    setattr(job, "_queue_created", True)
-    return job
 
 
 AUTO_SUMMARY_QUEUE_STATUSES = {
@@ -2472,6 +2180,11 @@ def _existing_item_source_tags(db: Session, item: Item, source: Source) -> list[
     return sanitize_tags(loads(raw_tags, []) if raw_tags else [])
 
 
+def _merged_item_source_tags(db: Session, item_id: str) -> list[str]:
+    tag_rows = db.execute(select(ItemSource.tags).where(ItemSource.item_id == item_id)).scalars()
+    return _merge_list_values(*[loads(tags, []) for tags in tag_rows])
+
+
 def _has_non_default_tags(tags: list[str], default_tags: list[str]) -> bool:
     default_set = set(sanitize_tags(default_tags))
     return any(tag not in default_set for tag in sanitize_tags(tags))
@@ -2541,8 +2254,7 @@ async def _generate_item_tags(db: Session, item: Item, settings: Settings, max_t
                 providers = [(None, settings)]
             for provider, provider_settings in providers:
                 try:
-                    generator = getattr(sys.modules.get("app.services"), "generate_tags_openai_compatible", generate_tags_openai_compatible)
-                    result = await generator(item, provider_settings, max_tags)
+                    result = await generate_tags_openai_compatible(item, provider_settings, max_tags)
                     _record_llm_usage_event(db, item, "tag_generation", "openai_compatible", provider_settings.llm_model_name or "", SummaryStatus.ready.value, result)
                     if provider:
                         provider.last_error = ""
@@ -2690,21 +2402,3 @@ def _fulltext_mode(config: dict[str, Any]) -> str:
         "generic_article": "detail_only",
         "feed_or_detail": "feed_then_detail",
     }.get(str(strategy), "feed_only")
-
-
-def export_source_pack(db: Session) -> str:
-    sources = list_sources(db)
-    payload = {"version": 1, "sources": [source.model_dump(exclude={"latest_run", "content_audit"}) for source in sources]}
-    for source in payload["sources"]:
-        source.pop("is_builtin", None)
-        for attempt in source["attempts"]:
-            attempt.pop("id", None)
-    return yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
-
-
-def import_source_pack(db: Session, text: str) -> int:
-    payload = yaml.safe_load(text) or {}
-    sources = [SourceIn.model_validate(raw) for raw in payload.get("sources", [])]
-    count = sync_source_pack(db, sources, builtin=False)
-    db.commit()
-    return count

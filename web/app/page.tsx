@@ -4,7 +4,8 @@ import { Suspense } from "react";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Ban, Check, ExternalLink, Eye, EyeOff, RefreshCcw, Save, Search, Sparkles, Star, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
-import { api, FeedPreset, Item, Source } from "@/lib/api";
+import { feedApi, itemsApi, sourcesApi } from "@/lib/apiDomains";
+import type { FeedPreset, Item, Source } from "@/lib/api";
 import {
   NO_SOURCE_SENTINEL,
   PRIORITY_OPTIONS,
@@ -86,7 +87,7 @@ function FeedView() {
     return Array.from(groups.values())
       .map((group) => ({
         ...group,
-        sources: group.sources.sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name)),
+        sources: group.sources.sort((a, b) => a.priority - b.priority || a.title.localeCompare(b.title)),
       }))
       .sort((a, b) => {
         return sourceGroupRank(a.groupName) - sourceGroupRank(b.groupName) || a.groupName.localeCompare(b.groupName);
@@ -98,12 +99,12 @@ function FeedView() {
 
     async function loadFeed() {
       try {
-        const [sourceRows, presetRows] = await Promise.all([api.getSources(), api.getFeedPresets()]);
+        const [sourceRows, presetRows] = await Promise.all([sourcesApi.getSources(), feedApi.getFeedPresets()]);
         if (!alive) return;
         setPresets(presetRows);
         const subscribedRows = sourceRows.filter((source) => source.subscribed);
         setSources(subscribedRows);
-        const feed = await api.getItems(itemQueryFromFilters(query, subscribedRows));
+        const feed = await feedApi.getItems(itemQueryFromFilters(query, subscribedRows));
         if (!alive) return;
         setItems(feed.items);
         setTotal(feed.total);
@@ -181,7 +182,7 @@ function FeedView() {
     setSavingPreset(true);
     setPresetMessage("");
     try {
-      const saved = await api.createFeedPreset({
+      const saved = await feedApi.createFeedPreset({
         name,
         description: "",
         filter: currentViewFilter(),
@@ -203,7 +204,7 @@ function FeedView() {
     if (preset.is_builtin) return;
     setPresetMessage("");
     try {
-      await api.deleteFeedPreset(preset.id);
+      await feedApi.deleteFeedPreset(preset.id);
       setPresets((rows) => rows.filter((row) => row.id !== preset.id));
       if (activePresetId === preset.id) selectPreset("all");
     } catch (err) {
@@ -250,7 +251,7 @@ function FeedView() {
   }
 
   async function itemAction(item: Item, action: "read" | "star" | "resummarize") {
-    const updated = action === "resummarize" ? await api.resummarize(item.id) : await api.markItem(item.id, action);
+    const updated = action === "resummarize" ? await itemsApi.resummarize(item.id) : await itemsApi.markItem(item.id, action);
     setItems((rows) => rows.map((row) => (row.id === item.id ? updated : row)));
     if (action === "resummarize" && updated.summary_status === "pending") {
       pollItemSummary(item.id);
@@ -267,7 +268,7 @@ function FeedView() {
         setItems((rows) => rows.filter((row) => row.id !== item.id));
         setTotal((value) => Math.max(value - 1, 0));
       }
-      await api.recordItemEvent(item.id, eventType, { preset_id: activePresetId, rank: currentRank || "latest" });
+      await itemsApi.recordItemEvent(item.id, eventType, { preset_id: activePresetId, rank: currentRank || "latest" });
       setPresetMessage(eventType === "more_like_this" ? "已记录：更多类似内容" : eventType === "less_like_this" ? "已记录：减少类似内容" : "已记录：不感兴趣");
     } catch (err) {
       if (eventType === "dismiss") {
@@ -289,7 +290,7 @@ function FeedView() {
     try {
       for (let i = 0; i < 20; i += 1) {
         await delay(2000);
-        const updated = await api.getItem(itemId);
+        const updated = await itemsApi.getItem(itemId);
         setItems((rows) => rows.map((row) => (row.id === itemId ? updated : row)));
         if (updated.summary_status === "ready" || updated.summary_status === "failed" || updated.summary_status === "not_configured") return;
       }
@@ -453,7 +454,7 @@ function FeedView() {
                             {checked && <Check size={14} />}
                           </span>
                           <span className="sourceOptionText">
-                            <span>{source.name}</span>
+                            <span>{source.title}</span>
                             <span>{priorityLabel(source)} · {source.platform || source.group || source.id}</span>
                           </span>
                         </label>
@@ -562,7 +563,7 @@ function FeedView() {
                 </div>
               ) : null}
               <div className="actions">
-                <a className="button" href={item.url} target="_blank" rel="noreferrer" onClick={() => void api.recordItemEvent(item.id, "open", { url: item.url })}>
+                <a className="button" href={item.url} target="_blank" rel="noreferrer" onClick={() => void itemsApi.recordItemEvent(item.id, "open", { url: item.url })}>
                   <ExternalLink size={16} /> Original
                 </a>
                 <span className={item.read ? "badge readStatus readStatusDone" : "badge readStatus"}>{readStatusLabel(item.read)}</span>

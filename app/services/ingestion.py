@@ -1,6 +1,6 @@
 """Ingestion, deterministic dedupe, provenance merge, and work intents."""
 
-from app.services.legacy import (  # noqa: F401
+from app.services.core import (  # noqa: F401
     IngestResult,
     TaggingResult,
     WorkIntent,

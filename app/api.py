@@ -3,7 +3,7 @@ import shutil
 from typing import Annotated
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query, Response
+from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -11,8 +11,9 @@ from sqlalchemy.orm import Session, selectinload
 from app.adapters import AdapterError, preview_source
 from app.application.items import ItemNotFound, set_item_flag
 from app.db import get_db, init_db
+from app.job_queue import enqueue_fetch_source, enqueue_summarize_item
 from app.jobs import schedule_auto_summaries, schedule_due_sources
-from app.models import Item, ItemSource, Job, JobStatus, LLMProvider, Source, SourceRun, SourceSubscription, Summary, SummaryStatus
+from app.models import Item, Job, JobStatus, LLMProvider, Source, SourceRun, SourceSubscription, Summary, SummaryStatus
 from app.schemas import (
     AiProviderTestResult,
     FeedPresetIn,
@@ -31,8 +32,6 @@ from app.schemas import (
     SettingsPatch,
     SourceDefinitionIn,
     SourceDefinitionOut,
-    SourceOut,
-    SourcePatch,
     SourceSubscriptionOut,
 )
 from app.services.feed_query import (
@@ -43,7 +42,7 @@ from app.services.feed_query import (
     query_items,
     resolve_item_query_params,
 )
-from app.services.legacy import queue_auto_summaries, queue_job, reconcile_auto_summary_statuses
+from app.services.core import queue_auto_summaries, reconcile_auto_summary_statuses
 from app.services.llm_providers import (
     ensure_initial_llm_provider,
     list_llm_providers,
@@ -59,7 +58,6 @@ from app.services.presenters import (
     latest_runs,
     source_content_stats,
     source_summary_stats,
-    source_to_out,
 )
 from app.services.recommendations import (
     get_recommendation_profile,
@@ -68,10 +66,7 @@ from app.services.recommendations import (
 )
 from app.services.source_definitions import (
     create_source_definition,
-    export_source_pack,
-    import_source_pack,
     list_source_definitions,
-    patch_source,
     patch_source_definition,
     sync_default_source_pack,
 )
@@ -206,7 +201,7 @@ def resummarize(item_id: str, db: Db):
     item.summary_status = SummaryStatus.pending.value if settings.llm_configured else SummaryStatus.not_configured.value
     db.commit()
     if settings.llm_configured:
-        queue_job(db, "summarize_item", {"item_id": item_id})
+        enqueue_summarize_item(db, item_id)
     return item_to_out(item, db)
 
 
@@ -246,11 +241,6 @@ def get_source_definitions(db: Db):
     return list_source_definitions(db)
 
 
-@app.get("/api/sources", response_model=list[SourceDefinitionOut])
-def get_sources(db: Db):
-    return list_source_definitions(db)
-
-
 @app.post("/api/source-definitions", response_model=SourceDefinitionOut)
 def create_source_catalog_entry(payload: SourceDefinitionIn, db: Db):
     try:
@@ -273,14 +263,6 @@ def update_source_catalog_entry(source_id: str, payload: SourceDefinitionPatch, 
     if payload.summary is not None:
         queue_auto_summaries(db, load_runtime_settings(db), source_id=source.id, limit=20)
     return updated
-
-
-@app.post("/api/sources", response_model=SourceDefinitionOut)
-def create_source(payload: SourceDefinitionIn, db: Db):
-    try:
-        return create_source_definition(db, payload, subscribe=True)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/subscriptions", response_model=list[SourceSubscriptionOut])
@@ -311,19 +293,6 @@ def unsubscribe(source_id: str, db: Db):
     return SourceSubscriptionOut(**subscription_to_dict(subscription))
 
 
-@app.patch("/api/sources/{source_id}", response_model=SourceOut)
-def update_source(source_id: str, payload: SourcePatch, db: Db):
-    source = db.execute(select(Source).options(selectinload(Source.attempts)).where(Source.id == source_id)).scalar_one_or_none()
-    if not source:
-        raise HTTPException(status_code=404, detail="Source not found")
-    patch_source(db, source, payload)
-    db.commit()
-    db.refresh(source)
-    if payload.auto_summary_enabled is not None or payload.auto_summary_days is not None:
-        queue_auto_summaries(db, load_runtime_settings(db), source_id=source.id, limit=20)
-    return source_to_out(source)
-
-
 @app.post("/api/sources/{source_id}/fetch")
 def fetch_source_now(source_id: str, db: Db):
     if not db.get(Source, source_id):
@@ -331,7 +300,7 @@ def fetch_source_now(source_id: str, db: Db):
     subscription = get_subscription(db, source_id)
     if not subscription or not subscription.subscribed:
         raise HTTPException(status_code=409, detail="Subscribe source before fetching")
-    job = queue_job(db, "fetch_source", {"source_id": source_id})
+    job = enqueue_fetch_source(db, source_id)
     return {"job_id": job.id, "status": job.status}
 
 
@@ -361,18 +330,6 @@ async def source_preview(payload: PreviewRequest, db: Db):
         for entry in result.entries[:5]
     ]
     return PreviewResponse(detected_adapter=adapter, entries=entries, warnings=result.warnings, used_url=result.used_url)
-
-
-@app.post("/api/sources/import")
-def import_sources(db: Db, source_pack: str = Body(media_type="text/yaml")):
-    imported = import_source_pack(db, source_pack)
-    queued = queue_auto_summaries(db, load_runtime_settings(db), limit=20)
-    return {"imported": imported, "summary_queued": queued}
-
-
-@app.get("/api/sources/export")
-def export_sources(db: Db):
-    return Response(export_source_pack(db), media_type="text/yaml")
 
 
 JOB_STATUSES = [
@@ -742,8 +699,3 @@ async def test_ai_provider(payload: SettingsPatch, db: Db):
 def run_scheduler_once(db: Db):
     settings = load_runtime_settings(db)
     return {"scheduled": schedule_due_sources(db), "summary_queued": schedule_auto_summaries(db, settings)}
-
-
-@app.get("/api/clusters")
-def get_clusters():
-    return {"clusters": []}

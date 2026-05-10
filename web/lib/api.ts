@@ -2,32 +2,24 @@ export type Source = {
   id: string;
   title: string;
   kind: "paper" | "blog" | "post";
-  name: string;
-  content_type: "paper" | "blog" | "post";
   platform: string;
   homepage: string;
-  homepage_url: string;
   language: string;
   tags: string[];
-  enabled: boolean;
   subscribed: boolean;
   effective_priority: number;
   priority_tier: string;
-  is_builtin: boolean;
   group: string;
   priority: number;
-  poll_interval: number;
-  auto_summary_enabled: boolean;
-  auto_summary_days: number;
-  language_hint: string;
-  include_keywords: string[];
-  exclude_keywords: string[];
-  default_tags: string[];
-  attempts: SourceAttempt[];
   fetch: SourceFetch;
   summary: SourceSummary;
   tagging: SourceTagging;
+  filters: {
+    include_keywords: string[];
+    exclude_keywords: string[];
+  };
   auth: Record<string, unknown>;
+  stability: string;
   runtime?: SourceRuntime | null;
   latest_item_published_at?: string | null;
   latest_item_ingested_at?: string | null;
@@ -36,20 +28,7 @@ export type Source = {
   catalog_file?: string;
   fulltext: Record<string, unknown>;
   content_audit?: Record<string, unknown>;
-  auth_mode: string;
-  stability_level: string;
   latest_run?: LatestRun | null;
-};
-
-export type SourceAttempt = {
-  id?: number;
-  kind: string;
-  adapter: string;
-  url: string;
-  route: string;
-  priority: number;
-  enabled: boolean;
-  config: Record<string, unknown>;
 };
 
 export type SourceFetchAttempt = {
@@ -317,5 +296,3 @@ export type RecommendationProfile = {
   implicit: Record<string, Record<string, number>>;
   updated_at?: string | null;
 };
-
-export { api, feedApi, healthApi, itemsApi, settingsApi, sourcesApi } from "@/lib/apiDomains";

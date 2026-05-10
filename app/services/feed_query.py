@@ -1,6 +1,6 @@
 """Feed query, preset resolution, pagination, and ranking orchestration."""
 
-from app.services.legacy import (  # noqa: F401
+from app.services.core import (  # noqa: F401
     PRIORITY_TIERS,
     create_feed_preset,
     delete_feed_preset,

@@ -7,7 +7,7 @@ from app.utils import dumps, loads
 
 
 def get_subscription(db: Session, source_id: str, profile_id: str = DEFAULT_PROFILE_ID) -> SourceSubscription | None:
-    return db.get(SourceSubscription, source_id)
+    return db.get(SourceSubscription, (profile_id, source_id))
 
 
 def subscribed_source_ids(db: Session, profile_id: str = DEFAULT_PROFILE_ID) -> list[str]:

@@ -2,7 +2,8 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, FlaskConical, Plus, Save, Trash2 } from "lucide-react";
-import { AiProviderTestResult, api, LlmProvider, LlmUsage, LlmUsageBucket, RecommendationProfile } from "@/lib/api";
+import { settingsApi } from "@/lib/apiDomains";
+import type { AiProviderTestResult, LlmProvider, LlmUsage, LlmUsageBucket, RecommendationProfile } from "@/lib/api";
 
 type Settings = {
   database_url?: string;
@@ -67,7 +68,7 @@ export default function SettingsPage() {
   async function loadSettings() {
     setError("");
     try {
-      const data = await api.settings();
+      const data = await settingsApi.settings();
       const current = data as Settings;
       setSettings(current);
       setForm({
@@ -80,7 +81,7 @@ export default function SettingsPage() {
       setError(err instanceof Error ? err.message : String(err));
     }
     try {
-      const profile = await api.getRecommendationProfile();
+      const profile = await settingsApi.getRecommendationProfile();
       setRecommendationProfile(profile);
       setRecommendationForm(profileToForm(profile));
     } catch (err) {
@@ -93,7 +94,7 @@ export default function SettingsPage() {
     setMessage("");
     setError("");
     try {
-      const saved = await api.patchRecommendationProfile({
+      const saved = await settingsApi.patchRecommendationProfile({
         interests: splitList(recommendationForm.interests),
         excluded_terms: splitList(recommendationForm.excluded_terms),
         source_ids: splitList(recommendationForm.source_ids),
@@ -119,7 +120,7 @@ export default function SettingsPage() {
     setMessage("");
     setError("");
     try {
-      await api.patchSettings(settingsBody());
+      await settingsApi.patchSettings(settingsBody());
       await loadSettings();
       setCodexTestResult(null);
       setProviderTestResults({});
@@ -136,7 +137,7 @@ export default function SettingsPage() {
     setCodexTestResult(null);
     setError("");
     try {
-      setCodexTestResult(await api.testAiProvider(settingsBody()));
+      setCodexTestResult(await settingsApi.testAiProvider(settingsBody()));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -153,7 +154,7 @@ export default function SettingsPage() {
     });
     setError("");
     try {
-      const result = await api.testAiProvider({
+      const result = await settingsApi.testAiProvider({
         llm_provider_type: "openai_compatible",
         llm_providers: [providerPayload(provider, index)],
       });

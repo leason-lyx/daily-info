@@ -4,7 +4,7 @@
 
 ```bash
 cp .env.example .env
-docker compose up -d
+docker compose -f docker-compose.yml -f docker-compose.localhost.yml up --build -d api worker scheduler web
 ```
 
 启动后访问：

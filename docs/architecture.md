@@ -2,7 +2,7 @@
 
 Daily Info 采用简单的单体后端加后台进程架构，避免把个人自托管工具拆成复杂微服务。
 
-当前后端按“模块化单体”组织：HTTP transport 在 `app/api.py`，请求级业务动作放在 `app/application/`，领域服务通过 `app/services/` 下的 `feed_query`、`recommendations`、`ingestion`、`source_definitions`、`llm_providers` 和 `presenters` 暴露。`app/services/legacy.py` 暂时保留历史实现并由 `app/services/__init__.py` re-export，便于分阶段迁移而不一次性打断旧导入。Job 侧新增 `app/job_registry.py`、`app/job_runtime.py`、`app/fetch_pipeline.py`、`app/summary_pipeline.py` 和 `app/recommendation_pipeline.py` 作为 typed enqueue、runtime 和领域 pipeline 的导入边界。
+当前后端按“模块化单体”组织：HTTP transport 在 `app/api.py`，请求级业务动作放在 `app/application/`，领域服务通过 `app/services/` 下的 `feed_query`、`recommendations`、`ingestion`、`source_definitions`、`llm_providers`、`presenters` 和 `core` 暴露。Job 投递统一走 `app/job_queue.py` 的 typed enqueue helpers，worker runtime 仍集中在 `app/jobs.py`。
 
 ## 服务拓扑
 
