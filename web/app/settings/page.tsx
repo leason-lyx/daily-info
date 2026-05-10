@@ -34,6 +34,7 @@ type ProviderForm = {
 type RecommendationForm = {
   interests: string;
   excluded_terms: string;
+  source_ids: string;
   tags: string;
   entities: string;
   platforms: string;
@@ -64,18 +65,27 @@ export default function SettingsPage() {
   }, []);
 
   async function loadSettings() {
-    const [data, profile] = await Promise.all([api.settings(), api.getRecommendationProfile()]);
-    const current = data as Settings;
-    setRecommendationProfile(profile);
-    setRecommendationForm(profileToForm(profile));
-    setSettings(current);
     setError("");
-    setForm({
-      llm_provider_type: current.llm_provider_type || "none",
-      codex_cli_path: current.codex_cli_path || "codex",
-      codex_cli_model: current.codex_cli_model || "",
-    });
-    setProviders(providerForms(current));
+    try {
+      const data = await api.settings();
+      const current = data as Settings;
+      setSettings(current);
+      setForm({
+        llm_provider_type: current.llm_provider_type || "none",
+        codex_cli_path: current.codex_cli_path || "codex",
+        codex_cli_model: current.codex_cli_model || "",
+      });
+      setProviders(providerForms(current));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    try {
+      const profile = await api.getRecommendationProfile();
+      setRecommendationProfile(profile);
+      setRecommendationForm(profileToForm(profile));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   async function saveRecommendation() {
@@ -86,6 +96,7 @@ export default function SettingsPage() {
       const saved = await api.patchRecommendationProfile({
         interests: splitList(recommendationForm.interests),
         excluded_terms: splitList(recommendationForm.excluded_terms),
+        source_ids: splitList(recommendationForm.source_ids),
         tags: splitList(recommendationForm.tags),
         entities: splitList(recommendationForm.entities),
         platforms: splitList(recommendationForm.platforms),
@@ -256,6 +267,12 @@ export default function SettingsPage() {
               label="排除词"
               value={recommendationForm.excluded_terms}
               onChange={(value) => setRecommendationForm({ ...recommendationForm, excluded_terms: value })}
+            />
+            <ListField
+              id="recommendation-source-ids"
+              label="关注源 ID"
+              value={recommendationForm.source_ids}
+              onChange={(value) => setRecommendationForm({ ...recommendationForm, source_ids: value })}
             />
             <ListField
               id="recommendation-tags"
@@ -514,6 +531,7 @@ function emptyRecommendationForm(): RecommendationForm {
   return {
     interests: "",
     excluded_terms: "",
+    source_ids: "",
     tags: "",
     entities: "",
     platforms: "",
@@ -526,6 +544,7 @@ function profileToForm(profile: RecommendationProfile): RecommendationForm {
   return {
     interests: joinList(profile.interests),
     excluded_terms: joinList(profile.excluded_terms),
+    source_ids: joinList(profile.source_ids),
     tags: joinList(profile.tags),
     entities: joinList(profile.entities),
     platforms: joinList(profile.platforms),

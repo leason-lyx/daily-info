@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from time import perf_counter
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.adapters import AdapterError, run_attempt
@@ -247,10 +247,11 @@ async def _summarize_item_with_openai_chain(db: Session, item: Item, settings: S
 
 async def run_job(db: Session, job: Job, settings: Settings) -> None:
     job_id = job.id
-    job.status = JobStatus.running.value
-    job.started_at = utcnow()
-    job.attempts += 1
-    db.commit()
+    if job.status != JobStatus.running.value:
+        claimed = _claim_job_by_id(db, job.id)
+        if not claimed:
+            return
+        job = claimed
     try:
         payload = loads(job.payload, {})
         if job.type == "fetch_source":
@@ -263,8 +264,10 @@ async def run_job(db: Session, job: Job, settings: Settings) -> None:
             embed_item(db, payload["item_id"])
         elif job.type == "refresh_external_trends":
             refresh_external_trends(db)
+            queue_job(db, "build_recommendation_profile", {"profile_id": "default"}, max_attempts=1)
         elif job.type == "build_recommendation_profile":
             build_recommendation_profile(db, payload.get("profile_id", "default"))
+            queue_job(db, "score_recommendations", {"profile_id": payload.get("profile_id", "default")}, max_attempts=1)
         elif job.type == "score_recommendations":
             score_recommendations(db, payload.get("profile_id", "default"))
         else:
@@ -283,6 +286,37 @@ async def run_job(db: Session, job: Job, settings: Settings) -> None:
         job.finished_at = utcnow()
         job.status = JobStatus.retrying.value if job.attempts < job.max_attempts else JobStatus.failed.value
     db.commit()
+
+
+def _claim_job_by_id(db: Session, job_id: int) -> Job | None:
+    now = datetime.now(timezone.utc)
+    result = db.execute(
+        update(Job)
+        .where(
+            Job.id == job_id,
+            Job.status.in_([JobStatus.queued.value, JobStatus.retrying.value]),
+            Job.scheduled_at <= now,
+        )
+        .values(status=JobStatus.running.value, started_at=utcnow(), attempts=Job.attempts + 1)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        return None
+    db.commit()
+    return db.get(Job, job_id)
+
+
+def claim_next_job(db: Session) -> Job | None:
+    candidate = db.execute(
+        select(Job.id)
+        .where(Job.status.in_([JobStatus.queued.value, JobStatus.retrying.value]), Job.scheduled_at <= datetime.now(timezone.utc))
+        .order_by(Job.scheduled_at, Job.id)
+        .limit(1)
+    ).scalar_one_or_none()
+    if candidate is None:
+        return None
+    return _claim_job_by_id(db, candidate)
 
 
 def recover_interrupted_work(db: Session, max_age_seconds: int, force: bool = False) -> int:
@@ -316,16 +350,11 @@ def recover_interrupted_work(db: Session, max_age_seconds: int, force: bool = Fa
 async def worker_loop() -> None:
     base_settings = get_settings()
     with SessionLocal() as db:
-        recover_interrupted_work(db, base_settings.worker_max_job_runtime_seconds, force=True)
+        recover_interrupted_work(db, base_settings.worker_max_job_runtime_seconds)
     while True:
         with SessionLocal() as db:
             recover_interrupted_work(db, base_settings.worker_max_job_runtime_seconds)
-            job = db.execute(
-                select(Job)
-                .where(Job.status.in_([JobStatus.queued.value, JobStatus.retrying.value]), Job.scheduled_at <= datetime.now(timezone.utc))
-                .order_by(Job.scheduled_at, Job.id)
-                .limit(1)
-            ).scalar_one_or_none()
+            job = claim_next_job(db)
             if job:
                 await run_job(db, job, load_runtime_settings(db))
         await asyncio.sleep(base_settings.worker_sleep_seconds)
@@ -346,8 +375,9 @@ def schedule_due_sources(db: Session) -> int:
         latest_started_at = _aware(latest.started_at) if latest else None
         if latest and latest_started_at and (now - latest_started_at).total_seconds() < source.poll_interval:
             continue
-        queue_job(db, "fetch_source", {"source_id": source.id})
-        scheduled += 1
+        job = queue_job(db, "fetch_source", {"source_id": source.id})
+        if getattr(job, "_queue_created", False):
+            scheduled += 1
     return scheduled
 
 
@@ -362,13 +392,8 @@ def schedule_recommendation_jobs(db: Session, interval_seconds: int = 900) -> in
     latest = _aware(datetime.fromisoformat(latest_value)) if isinstance(latest_value, str) else _aware(latest_value)
     if latest and (now - latest).total_seconds() < interval_seconds:
         return 0
-    queued = 0
-    queue_job(db, "refresh_external_trends", {}, max_attempts=1)
-    queued += 1
-    queue_job(db, "build_recommendation_profile", {"profile_id": "default"}, max_attempts=1)
-    queued += 1
-    queue_job(db, "score_recommendations", {"profile_id": "default"}, max_attempts=1)
-    queued += 1
+    job = queue_job(db, "refresh_external_trends", {}, max_attempts=2)
+    queued = 1 if getattr(job, "_queue_created", False) else 0
     set_setting_value(db, "recommendation.last_scheduled_at", now.isoformat())
     db.commit()
     return queued

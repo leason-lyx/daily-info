@@ -12,7 +12,7 @@ docker compose up -d
 - Web：`http://localhost:3000`
 - API docs：`http://localhost:8000/docs`
 
-默认 Compose 栈只监听本机回环地址：Web 在 `127.0.0.1:3000`，API 在 `127.0.0.1:8000`。SQLite 数据库文件位于后端容器内的 `/data/daily-info.db`，并通过 `daily_info_data` Docker volume 持久化。
+默认 Compose 栈只监听本机回环地址：Web 在 `127.0.0.1:3000`，API 在 `127.0.0.1:8000`。SQLite 数据库文件位于后端容器内的 `/data/daily-info.db`，并通过 `daily_info_data` Docker volume 持久化；`api`、`worker` 和 `scheduler` 都使用同一个默认 `DATABASE_URL` 和同一份配置挂载。
 
 如果需要在自己的笔记本通过 tailnet 访问，推荐让 Tailscale Serve 负责对外入口，容器仍只监听 localhost：
 
@@ -57,7 +57,7 @@ RSSHub 是可选增强。系统会按配置的实例顺序尝试 RSSHub route，
 
 - 使用默认公共 RSSHub 实例。
 - 设置 `RSSHUB_SELF_HOSTED_BASE_URL` 指向自托管实例。
-- 使用 Compose profile 启动仓库内的 `rsshub` 服务。
+- 使用 Compose profile 启动仓库内的 `rsshub` 服务；该服务默认只绑定 `127.0.0.1:1200`。
 
 ## AI Provider
 

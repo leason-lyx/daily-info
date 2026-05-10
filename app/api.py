@@ -40,7 +40,6 @@ from app.services import (
     create_source_definition,
     delete_feed_preset,
     export_source_pack,
-    item_event_to_dict,
     import_source_pack,
     item_to_out,
     item_sources_for_item,
@@ -157,14 +156,15 @@ def _set_item_flag(db: Session, item_id: str, field: str, value: bool | None):
     current = getattr(item, field)
     next_value = (not current) if value is None else value
     setattr(item, field, next_value)
-    db.commit()
     event_type = {
         "read": "read" if next_value else "unread",
         "starred": "star" if next_value else "unstar",
         "hidden": "hide" if next_value else "unhide",
     }.get(field)
     if event_type:
-        record_item_event(db, item_id, event_type)
+        record_item_event(db, item_id, event_type, commit=False)
+    db.commit()
+    db.refresh(item)
     return item_to_out(item, db)
 
 

@@ -56,9 +56,9 @@ Item / ItemSource / UserItemEvent
 - 只有已订阅 source 会被 scheduler 抓取，并默认进入 feed。
 - Item 使用确定性 `dedupe_key` 做跨 source 去重；`item_sources` 是来源归属的事实表，source 过滤、订阅过滤、health 统计、source audit 和摘要队列都按它计算。
 - Feed 预设是独立视图层：内置预设来自 `config/feed-presets.yaml`，自定义预设保存在数据库；预设只解析成普通 feed filter，不改变订阅状态。
-- `For You` 推荐是 feed 排序层，优先使用 `ItemRecommendationScore` 缓存分数，缓存缺失或过期时回退到请求时可解释规则；推荐只改变排序和解释，不改变订阅、去重或来源归属。
+- `For You` 推荐使用最近候选窗口，优先展示 30 天内内容；重要源的未读内容可放宽到 90 天。排序优先使用 `ItemRecommendationScore` 缓存分数，缓存缺失或过期时回退到请求时可解释规则；推荐只改变候选展示、排序和解释，不改变订阅、去重或来源归属。
 - 推荐画像由显式 Settings 偏好和带时间衰减的行为事件合并而成，单用户阶段使用 `profile_id="default"`，未来可扩展到多用户。
-- 外部热度信号通过 adapter 写入 `ExternalTrendSignal`；provider 失败只影响趋势分项，不阻断 feed。
+- 外部热度信号通过 adapter 写入 `ExternalTrendSignal`；provider 失败只影响趋势分项，不阻断 feed。Scheduler 只投递 `refresh_external_trends`，worker 在趋势刷新成功后串联投递画像构建和推荐打分，避免同一轮推荐任务乱序执行。
 - 每个 source 可以配置 `tagging` 策略：可信 feed 使用 entry category/tag，不可信 feed 可用 AI 生成主题标签，所有路径都会过滤明显的网页布局/CSS class 噪声。
 - item 入库不等待 AI 摘要完成。
 - 抓取、全文和摘要失败都应可观察，但不应阻断历史内容浏览。

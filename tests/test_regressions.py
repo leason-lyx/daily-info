@@ -25,12 +25,16 @@ def test_docker_context_keeps_source_pack_and_excludes_env_secrets() -> None:
     root = Path(__file__).resolve().parents[1]
     dockerfile = (root / "Dockerfile.api").read_text(encoding="utf-8")
     dockerignore = (root / ".dockerignore").read_text(encoding="utf-8")
+    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
 
     assert "COPY config ./config" in dockerfile
     assert "config" not in {line.strip().strip("/") for line in dockerignore.splitlines() if line.strip()}
     assert ".env.*" in dockerignore
     assert "!.env.example" in dockerignore
     assert "!.env.local.example" in dockerignore
+    assert "./config/feed-presets.yaml:/app/config/feed-presets.yaml:ro" in compose
+    assert compose.count("DATABASE_URL: ${DATABASE_URL:-sqlite:////data/daily-info.db}") >= 3
+    assert '"127.0.0.1:1200:1200"' in compose
 
 
 def test_api_smoke_uses_temp_database(tmp_path: Path) -> None:
@@ -1905,6 +1909,13 @@ def test_for_you_profile_trends_feedback_and_cached_scores(tmp_path: Path) -> No
             assert profile["interests"] == ["AI agents"]
 
         with SessionLocal() as db:
+            resolved = resolve_item_query_params(db, preset_id="for-you")
+            items, total = query_items(db, **resolved)
+            assert total == 2
+            assert items[0].id == agent_id
+            assert "hn trend" in items[0]._recommendation_reasons
+            assert items[0]._recommendation_components["trend_breakthrough"] > 0
+
             build_recommendation_profile(db)
             scored = score_recommendations(db)
             assert scored == 2
@@ -1926,14 +1937,17 @@ def test_for_you_profile_trends_feedback_and_cached_scores(tmp_path: Path) -> No
             assert response.status_code == 200, response.text
 
         with SessionLocal() as db:
-            build_recommendation_profile(db)
-            score_recommendations(db)
             events = db.execute(select(UserItemEvent.event_type).where(UserItemEvent.item_id == agent_id)).scalars().all()
             assert "less_like_this" in events
             assert "dismiss" in events
             row = db.get(UserPreference, "default")
             implicit = loads(row.implicit_json, {})
             assert implicit["tags"]["agents"] < 0
+            expired_cache = db.execute(select(ItemRecommendationScore).where(ItemRecommendationScore.item_id == agent_id)).scalar_one()
+            expires_at = expired_cache.expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            assert expires_at < datetime.now(timezone.utc)
             resolved = resolve_item_query_params(db, preset_id="for-you")
             items, total = query_items(db, **resolved)
             assert total == 2
@@ -1941,6 +1955,142 @@ def test_for_you_profile_trends_feedback_and_cached_scores(tmp_path: Path) -> No
         print("ok")
         """,
         sqlite_url(tmp_path / "for-you-recommendations.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_for_you_candidate_window_matches_query_and_scoring(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import select
+
+        from app.db import SessionLocal, init_db
+        from app.models import Item, ItemRecommendationScore, ItemSource, Source, SourceSubscription
+        from app.services import query_items, resolve_item_query_params, score_recommendations, sync_feed_presets
+
+        init_db()
+        now = datetime.now(timezone.utc)
+        with SessionLocal() as db:
+            sync_feed_presets(db)
+            db.add(Source(id="core", name="Core Lab", content_type="blog", platform="lab", group="Model Labs", priority=10))
+            db.add(SourceSubscription(source_id="core", subscribed=True))
+            recent = Item(
+                source_id="core",
+                canonical_url="https://example.com/recent",
+                title="Recent core update",
+                url="https://example.com/recent",
+                content_type="blog",
+                platform="lab",
+                source_name="Core Lab",
+                published_at=now - timedelta(days=5),
+            )
+            old_published = Item(
+                source_id="core",
+                canonical_url="https://example.com/old-published",
+                title="Old published update",
+                url="https://example.com/old-published",
+                content_type="blog",
+                platform="lab",
+                source_name="Core Lab",
+                published_at=now - timedelta(days=100),
+                created_at=now,
+                read=False,
+            )
+            old_without_publish_time = Item(
+                source_id="core",
+                canonical_url="https://example.com/old-created",
+                title="Important undated update",
+                url="https://example.com/old-created",
+                content_type="blog",
+                platform="lab",
+                source_name="Core Lab",
+                published_at=None,
+                created_at=now - timedelta(days=60),
+                read=False,
+            )
+            db.add_all([recent, old_published, old_without_publish_time])
+            db.flush()
+            for item in [recent, old_published, old_without_publish_time]:
+                db.add(ItemSource(item_id=item.id, source_id="core", source_name="Core Lab", url=item.url, canonical_url=item.canonical_url))
+            db.commit()
+            old_id = old_published.id
+            undated_id = old_without_publish_time.id
+
+            resolved = resolve_item_query_params(db, preset_id="for-you")
+            items, total = query_items(db, **resolved)
+            ids = {item.id for item in items}
+            assert total == 2
+            assert old_id not in ids
+            assert undated_id in ids
+
+            assert score_recommendations(db) == 2
+            scored_ids = set(db.execute(select(ItemRecommendationScore.item_id)).scalars().all())
+            assert old_id not in scored_ids
+            assert undated_id in scored_ids
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "for-you-window.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_recommendation_scheduler_queues_pipeline_once(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+
+        from sqlalchemy import select
+
+        import app.jobs as jobs
+        from app.config import get_settings
+        from app.db import SessionLocal, init_db
+        from app.models import Job, JobStatus
+
+        init_db()
+        calls = []
+
+        def fake_refresh(db):
+            calls.append("refresh")
+            return 0
+
+        def fake_build(db, profile_id="default"):
+            calls.append(f"build:{profile_id}")
+            return None
+
+        def fake_score(db, profile_id="default"):
+            calls.append(f"score:{profile_id}")
+            return 0
+
+        jobs.refresh_external_trends = fake_refresh
+        jobs.build_recommendation_profile = fake_build
+        jobs.score_recommendations = fake_score
+
+        with SessionLocal() as db:
+            assert jobs.schedule_recommendation_jobs(db, interval_seconds=900) == 1
+            assert jobs.schedule_recommendation_jobs(db, interval_seconds=900) == 0
+            rows = db.execute(select(Job).order_by(Job.id)).scalars().all()
+            assert [row.type for row in rows] == ["refresh_external_trends"]
+
+            refresh = rows[0]
+            asyncio.run(jobs.run_job(db, refresh, get_settings()))
+            assert refresh.status == JobStatus.succeeded.value
+            build = db.execute(select(Job).where(Job.type == "build_recommendation_profile")).scalar_one()
+            assert build.status == JobStatus.queued.value
+
+            asyncio.run(jobs.run_job(db, build, get_settings()))
+            assert build.status == JobStatus.succeeded.value
+            score = db.execute(select(Job).where(Job.type == "score_recommendations")).scalar_one()
+            assert score.status == JobStatus.queued.value
+
+            asyncio.run(jobs.run_job(db, score, get_settings()))
+            assert score.status == JobStatus.succeeded.value
+            assert calls == ["refresh", "build:default", "score:default"]
+            assert {job.attempts for job in db.execute(select(Job)).scalars()} == {1}
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "recommendation-jobs.db"),
     )
     assert result.stdout.strip() == "ok"
 

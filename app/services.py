@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import httpx
 import yaml
-from sqlalchemy import Select, and_, delete, distinct, func, or_, select
+from sqlalchemy import Select, and_, delete, distinct, func, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.catalog import DEFAULT_SOURCE_PACK_PATH
@@ -1030,11 +1030,13 @@ def queue_job(db: Session, job_type: str, payload: dict[str, Any], max_attempts:
         )
     ).scalar_one_or_none()
     if existing:
+        setattr(existing, "_queue_created", False)
         return existing
     job = Job(type=job_type, payload=dumps(payload), max_attempts=max_attempts)
     db.add(job)
     db.commit()
     db.refresh(job)
+    setattr(job, "_queue_created", True)
     return job
 
 
@@ -1385,6 +1387,8 @@ def query_items(
     if rank in {"recommended", "for_you"}:
         rows = db.execute(stmt.order_by(Item.published_at.desc().nullslast(), Item.created_at.desc(), Item.id.desc())).scalars().all()
         profile = recommendation_profile_weights(db)
+        if rank == "for_you":
+            _attach_recommendation_runtime_caches(db, profile)
         cached_scores = _cached_recommendation_scores(db, [item.id for item in rows]) if rank == "for_you" else {}
         for item in rows:
             cached = cached_scores.get(item.id)
@@ -1393,8 +1397,7 @@ def query_items(
                 reasons = cached["reasons"]
                 components = cached["components"]
             else:
-                fallback_mode = "recommended" if rank == "for_you" else rank
-                score, reasons, components = recommendation_for_item(db, item, profile, mode=fallback_mode)
+                score, reasons, components = recommendation_for_item(db, item, profile, mode=rank)
             setattr(item, "_recommendation_score", score)
             setattr(item, "_recommendation_reasons", reasons)
             setattr(item, "_recommendation_components", components)
@@ -1430,17 +1433,30 @@ def _sort_datetime(item: Item) -> datetime:
     return _aware_datetime(value) or datetime.min.replace(tzinfo=timezone.utc)
 
 
-def record_item_event(db: Session, item_id: str, event_type: str, source_id: str = "", metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+def record_item_event(
+    db: Session,
+    item_id: str,
+    event_type: str,
+    source_id: str = "",
+    metadata: dict[str, Any] | None = None,
+    *,
+    commit: bool = True,
+) -> dict[str, Any]:
     item = db.get(Item, item_id)
     if not item:
         raise KeyError(item_id)
     event = UserItemEvent(item_id=item_id, event_type=event_type, source_id=source_id or "", metadata_json=dumps(metadata or {}))
     db.add(event)
-    if event_type in {"open", "read", "star", "hide", "more_like_this", "less_like_this", "dismiss"}:
+    if event_type in {"open", "read", "unread", "star", "unstar", "hide", "unhide", "more_like_this", "less_like_this", "dismiss"}:
         _apply_event_to_implicit_profile(db, item, event_type)
-    _expire_recommendation_scores(db, item_id=item_id)
-    db.commit()
-    db.refresh(event)
+        _expire_recommendation_scores(db, profile_id=RECOMMENDATION_PROFILE_ID)
+    else:
+        _expire_recommendation_scores(db, item_id=item_id)
+    if commit:
+        db.commit()
+        db.refresh(event)
+    else:
+        db.flush()
     return item_event_to_dict(event)
 
 
@@ -1479,12 +1495,26 @@ def recommendation_for_item(
         "quality": round(quality_score, 3),
         "interaction_penalty": round(penalty_score, 3),
     }
-    total = sum(components.values())
+    total = _weighted_recommendation_total(components, profile)
     for bucket in [personal_reasons, trend_reasons, source_reasons, recency_reasons, quality_reasons, penalty_reasons]:
         for reason in bucket:
             if reason not in reasons:
                 reasons.append(reason)
     return round(total, 3), reasons[:6], components
+
+
+def _weighted_recommendation_total(components: dict[str, float], profile: dict[str, dict[str, float]]) -> float:
+    configured = profile.get("weights", {})
+    total = 0.0
+    for key, default_weight in RECOMMENDATION_WEIGHTS.items():
+        value = float(components.get(key, 0.0) or 0.0)
+        if default_weight <= 0:
+            total += value
+            continue
+        target_weight = max(0.0, min(float(configured.get(key, default_weight) or default_weight), 100.0))
+        total += (value / default_weight) * target_weight
+    total += float(components.get("interaction_penalty", 0.0) or 0.0)
+    return total
 
 
 def _item_source_priority_rows(db: Session, item: Item) -> list[dict[str, Any]]:
@@ -1524,17 +1554,28 @@ def recommendation_profile_weights(db: Session, profile_id: str = RECOMMENDATION
         excluded = loads(row.excluded_json, {})
         profile["excluded_terms"] = {str(value).strip().lower(): -20.0 for value in _normalize_list(excluded.get("terms"))}
         settings = loads(row.settings_json, {})
-        profile["trend_providers"] = {str(value).strip().lower(): 1.0 for value in _normalize_list(settings.get("trend_providers"))}
+        profile["trend_providers"] = {str(value).strip().lower(): 1.0 for value in _normalize_list(settings.get("trend_providers")) or ["hn"]}
         profile["weights"] = {str(key): float(value) for key, value in (settings.get("weights") or {}).items() if isinstance(value, (int, float))}
-    event_profile = _event_preference_profile(db)
-    for bucket, weights in event_profile.items():
-        for key, weight in weights.items():
-            _bump(profile[bucket], key, weight)
     return profile
 
 
 def get_recommendation_profile(db: Session, profile_id: str = RECOMMENDATION_PROFILE_ID) -> dict[str, Any]:
-    row = _ensure_user_preference(db, profile_id)
+    row = db.get(UserPreference, profile_id)
+    if not row:
+        return {
+            "profile_id": profile_id,
+            "interests": [],
+            "excluded_terms": [],
+            "source_ids": [],
+            "tags": [],
+            "entities": [],
+            "platforms": [],
+            "content_types": [],
+            "trend_providers": ["hn"],
+            "weights": RECOMMENDATION_WEIGHTS,
+            "implicit": {},
+            "updated_at": None,
+        }
     explicit = loads(row.explicit_json, {})
     excluded = loads(row.excluded_json, {})
     settings = loads(row.settings_json, {})
@@ -1647,7 +1688,18 @@ def _event_preference_profile(db: Session) -> dict[str, dict[str, float]]:
 def _apply_event_to_implicit_profile(db: Session, item: Item, event_type: str) -> None:
     row = _ensure_user_preference(db)
     implicit = loads(row.implicit_json, {})
-    weights = {"star": 4.0, "more_like_this": 3.0, "open": 0.8, "read": 0.5, "less_like_this": -4.0, "hide": -6.0, "dismiss": -7.0}
+    weights = {
+        "star": 4.0,
+        "unstar": -4.0,
+        "more_like_this": 3.0,
+        "open": 0.8,
+        "read": 0.5,
+        "unread": -0.5,
+        "less_like_this": -4.0,
+        "hide": -6.0,
+        "unhide": 6.0,
+        "dismiss": -7.0,
+    }
     weight = weights.get(event_type, 0.0)
     if not weight:
         return
@@ -1760,7 +1812,7 @@ def _trend_breakthrough_score(db: Session, item: Item, profile: dict[str, dict[s
     if source_count > 1:
         score += min(8.0, 3.0 + source_count * 2.0)
         reasons.append(f"{source_count} sources")
-    tag_burst = _tag_burst_score(db, loads(item.tags, []))
+    tag_burst = _tag_burst_score(db, loads(item.tags, []), profile)
     if tag_burst:
         score += tag_burst
         reasons.append("tag momentum")
@@ -1803,33 +1855,35 @@ def _item_age_days(item: Item) -> float:
     return max((now - item_time).total_seconds() / 86400, 0)
 
 
-def _tag_burst_score(db: Session, tags: list[str]) -> float:
+def _tag_burst_score(db: Session, tags: list[str], profile: dict[str, dict[str, float]] | None = None) -> float:
     normalized = [str(tag).strip().lower() for tag in tags if str(tag).strip()]
     if not normalized:
         return 0.0
     cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    cache = profile.get("_tag_burst_cache", {}) if profile else {}
     score = 0.0
     for tag in normalized[:5]:
-        count = db.execute(
-            select(func.count(Item.id)).where(
-                Item.created_at >= cutoff,
-                Item.tags.ilike(f"%{tag}%"),
-            )
-        ).scalar_one()
+        if isinstance(cache, dict) and tag in cache:
+            count = int(cache[tag])
+        else:
+            count = db.execute(
+                select(func.count(Item.id)).where(
+                    Item.created_at >= cutoff,
+                    Item.tags.ilike(f"%{tag}%"),
+                )
+            ).scalar_one()
+            if isinstance(cache, dict):
+                cache[tag] = int(count)
         if count >= 3:
             score = max(score, min(7.0, float(count)))
     return score
 
 
 def _external_trend_score(db: Session, item: Item, profile: dict[str, dict[str, float]]) -> tuple[float, list[str]]:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
     provider_weights = profile.get("trend_providers", {})
-    signals = db.execute(
-        select(ExternalTrendSignal)
-        .where(ExternalTrendSignal.observed_at >= cutoff)
-        .order_by(ExternalTrendSignal.score.desc())
-        .limit(200)
-    ).scalars().all()
+    signals = profile.get("_trend_signals")  # type: ignore[assignment]
+    if not isinstance(signals, list):
+        signals = _recent_external_trend_signals(db)
     item_urls = {canonicalize_url(item.url or ""), canonicalize_url(item.canonical_url or "")} - {""}
     item_text = " ".join([item.title, item.chinese_title, item.summary]).lower()
     item_terms = {str(value).strip().lower() for value in [*loads(item.tags, []), *loads(item.entities, [])] if str(value).strip()}
@@ -1861,6 +1915,21 @@ def _external_trend_score(db: Session, item: Item, profile: dict[str, dict[str, 
     return min(best_score, 16.0), [f"{best_provider} trend"]
 
 
+def _attach_recommendation_runtime_caches(db: Session, profile: dict[str, dict[str, float]]) -> None:
+    profile["_trend_signals"] = _recent_external_trend_signals(db)  # type: ignore[assignment]
+    profile["_tag_burst_cache"] = {}  # type: ignore[assignment]
+
+
+def _recent_external_trend_signals(db: Session) -> list[ExternalTrendSignal]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    return db.execute(
+        select(ExternalTrendSignal)
+        .where(ExternalTrendSignal.observed_at >= cutoff)
+        .order_by(ExternalTrendSignal.score.desc())
+        .limit(200)
+    ).scalars().all()
+
+
 def _cached_recommendation_scores(db: Session, item_ids: list[str], profile_id: str = RECOMMENDATION_PROFILE_ID) -> dict[str, dict[str, Any]]:
     if not item_ids:
         return {}
@@ -1887,10 +1956,11 @@ def _cached_recommendation_scores(db: Session, item_ids: list[str], profile_id: 
 def score_recommendations(db: Session, profile_id: str = RECOMMENDATION_PROFILE_ID, limit: int = 600) -> int:
     run = RecommendationRun(job_type="score_recommendations", profile_id=profile_id, status="running", model_version=RECOMMENDATION_MODEL_VERSION)
     db.add(run)
-    db.flush()
+    db.commit()
     try:
         items = _recommendation_candidates(db, limit=limit)
         profile = recommendation_profile_weights(db, profile_id)
+        _attach_recommendation_runtime_caches(db, profile)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=RECOMMENDATION_SCORE_TTL_MINUTES)
         for item in items:
             score, reasons, components = recommendation_for_item(db, item, profile, mode="for_you")
@@ -1995,7 +2065,7 @@ def _hash_embedding(text: str, dimensions: int = 64) -> list[float]:
 def refresh_external_trends(db: Session) -> int:
     run = RecommendationRun(job_type="refresh_external_trends", profile_id=RECOMMENDATION_PROFILE_ID, status="running", model_version=RECOMMENDATION_MODEL_VERSION)
     db.add(run)
-    db.flush()
+    db.commit()
     imported = 0
     errors: list[str] = []
     try:
@@ -2006,7 +2076,11 @@ def refresh_external_trends(db: Session) -> int:
     run.error_message = "\n".join(errors)[-4000:]
     run.item_count = imported
     run.finished_at = utcnow()
+    if imported:
+        _expire_recommendation_scores(db, profile_id=RECOMMENDATION_PROFILE_ID)
     db.commit()
+    if errors and imported == 0:
+        raise RuntimeError(run.error_message or "External trend refresh failed")
     return imported
 
 
@@ -2036,6 +2110,7 @@ def _refresh_hn_trends(db: Session) -> int:
             tags=["ai", "hn"],
             entities=extract_entities(title),
             metadata={"points": points, "comments": comments},
+            expire_scores=False,
         )
         imported += 1
     return imported
@@ -2052,6 +2127,7 @@ def upsert_external_trend_signal(
     tags: list[str] | None = None,
     entities: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    expire_scores: bool = True,
 ) -> ExternalTrendSignal:
     row = db.execute(
         select(ExternalTrendSignal).where(
@@ -2069,7 +2145,8 @@ def upsert_external_trend_signal(
     row.entities_json = dumps(entities or [])
     row.metadata_json = dumps(metadata or {})
     row.observed_at = utcnow()
-    _expire_recommendation_scores(db)
+    if expire_scores:
+        _expire_recommendation_scores(db, profile_id=RECOMMENDATION_PROFILE_ID)
     return row
 
 
@@ -2089,7 +2166,11 @@ def _recommendation_candidates(db: Session, limit: int) -> list[Item]:
             or_(
                 Item.published_at >= recent_cutoff,
                 and_(Item.published_at.is_(None), Item.created_at >= recent_cutoff),
-                and_(Item.read.is_(False), important, or_(Item.published_at >= extended_cutoff, Item.created_at >= extended_cutoff)),
+                and_(
+                    Item.read.is_(False),
+                    important,
+                    or_(Item.published_at >= extended_cutoff, and_(Item.published_at.is_(None), Item.created_at >= extended_cutoff)),
+                ),
             ),
         )
         .order_by(Item.published_at.desc().nullslast(), Item.created_at.desc(), Item.id.desc())
@@ -2099,16 +2180,15 @@ def _recommendation_candidates(db: Session, limit: int) -> list[Item]:
 
 
 def _expire_recommendation_scores(db: Session, item_id: str | None = None, profile_id: str | None = None) -> None:
-    stmt = select(ItemRecommendationScore)
     filters = []
     if item_id:
         filters.append(ItemRecommendationScore.item_id == item_id)
     if profile_id:
         filters.append(ItemRecommendationScore.profile_id == profile_id)
+    stmt = update(ItemRecommendationScore).values(expires_at=utcnow() - timedelta(seconds=1)).execution_options(synchronize_session=False)
     if filters:
         stmt = stmt.where(and_(*filters))
-    for row in db.execute(stmt).scalars():
-        row.expires_at = utcnow() - timedelta(seconds=1)
+    db.execute(stmt)
 
 
 def _dedupe_values(values: Any) -> list[str]:

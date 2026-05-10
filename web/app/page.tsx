@@ -202,6 +202,7 @@ function FeedView() {
   const [loadedQueryKey, setLoadedQueryKey] = useState<string | null>(null);
   const [failedQueryKey, setFailedQueryKey] = useState<string | null>(null);
   const [summarizingIds, setSummarizingIds] = useState<Set<string>>(new Set());
+  const [feedbackPendingIds, setFeedbackPendingIds] = useState<Set<string>>(new Set());
   const [isPending, startTransition] = useTransition();
   const queryKey = searchParams.toString();
   const query = useMemo(() => new URLSearchParams(queryKey), [queryKey]);
@@ -228,7 +229,7 @@ function FeedView() {
   const currentSummaryStatus = searchParams.has("summary_status") ? searchParams.get("summary_status") || "" : String(activePresetFilter.summary_status || "");
   const presetRank = activePreset?.rank?.mode === "recommended" || activePreset?.rank?.mode === "for_you" ? String(activePreset.rank.mode) : "";
   const currentRank = searchParams.has("rank") ? searchParams.get("rank") || "" : presetRank;
-  const presetAdjusted = Boolean(searchParams.get("preset_id")) && ["source_id", "priority_tier", "since", "q", "summary_status", "rank"].some((key) => searchParams.has(key));
+  const presetAdjusted = Boolean(searchParams.get("preset_id")) && ["source_id", "source_group", "priority_tier", "since", "q", "summary_status", "rank"].some((key) => searchParams.has(key));
   const selectedSourceIds = useMemo(() => {
     return selectedIdsFromParams(sources, sourceParams);
   }, [sourceParams, sources]);
@@ -371,6 +372,9 @@ function FeedView() {
   function setSourceFilter(nextSourceIds: string[]) {
     const next = new URLSearchParams(searchParams.toString());
     next.delete("source_id");
+    if (activePresetFilter.groups || activePresetFilter.source_group || searchParams.has("source_group")) {
+      next.set("source_group", "");
+    }
     if (!nextSourceIds.length) {
       next.append("source_id", NO_SOURCE_SENTINEL);
     } else if (nextSourceIds.length < sources.length) {
@@ -412,13 +416,30 @@ function FeedView() {
   }
 
   async function feedbackAction(item: Item, eventType: "more_like_this" | "less_like_this" | "dismiss") {
-    await api.recordItemEvent(item.id, eventType, { preset_id: activePresetId, rank: currentRank || "latest" });
-    if (eventType === "dismiss") {
-      setItems((rows) => rows.filter((row) => row.id !== item.id));
-      setTotal((value) => Math.max(value - 1, 0));
-      return;
+    setFeedbackPendingIds((ids) => new Set(ids).add(item.id));
+    setPresetMessage("");
+    const previousItems = items;
+    const previousTotal = total;
+    try {
+      if (eventType === "dismiss") {
+        setItems((rows) => rows.filter((row) => row.id !== item.id));
+        setTotal((value) => Math.max(value - 1, 0));
+      }
+      await api.recordItemEvent(item.id, eventType, { preset_id: activePresetId, rank: currentRank || "latest" });
+      setPresetMessage(eventType === "more_like_this" ? "已记录：更多类似内容" : eventType === "less_like_this" ? "已记录：减少类似内容" : "已记录：不感兴趣");
+    } catch (err) {
+      if (eventType === "dismiss") {
+        setItems(previousItems);
+        setTotal(previousTotal);
+      }
+      setPresetMessage(err instanceof Error ? err.message : "记录反馈失败");
+    } finally {
+      setFeedbackPendingIds((ids) => {
+        const next = new Set(ids);
+        next.delete(item.id);
+        return next;
+      });
     }
-    setPresetMessage(eventType === "more_like_this" ? "已记录：更多类似内容" : "已记录：减少类似内容");
   }
 
   async function pollItemSummary(itemId: string) {
@@ -615,6 +636,7 @@ function FeedView() {
           const itemSources = itemSourceRows(item);
           const shownSources = itemSources.slice(0, 2);
           const hiddenSourceCount = Math.max(itemSources.length - shownSources.length, 0);
+          const feedbackPending = feedbackPendingIds.has(item.id);
 
           return (
             <article className="item" key={item.id}>
@@ -723,15 +745,15 @@ function FeedView() {
                   <RefreshCcw size={16} />
                   {summarizeDisabled ? "生成中" : summarizeButtonLabel(item.summary_status)}
                 </button>
-                {(currentRank === "for_you" || activePresetId === "for-you") ? (
+                {currentRank === "for_you" ? (
                   <>
-                    <button className="button" type="button" title="推荐更多类似内容" onClick={() => void feedbackAction(item, "more_like_this")}>
+                    <button className="button" type="button" title="推荐更多类似内容" onClick={() => void feedbackAction(item, "more_like_this")} disabled={feedbackPending}>
                       <ThumbsUp size={16} /> 更多类似
                     </button>
-                    <button className="button" type="button" title="减少类似内容" onClick={() => void feedbackAction(item, "less_like_this")}>
+                    <button className="button" type="button" title="减少类似内容" onClick={() => void feedbackAction(item, "less_like_this")} disabled={feedbackPending}>
                       <ThumbsDown size={16} /> 减少类似
                     </button>
-                    <button className="button" type="button" title="从本次推荐中移除" onClick={() => void feedbackAction(item, "dismiss")}>
+                    <button className="button" type="button" title="从本次推荐中移除" onClick={() => void feedbackAction(item, "dismiss")} disabled={feedbackPending}>
                       <Ban size={16} /> 不感兴趣
                     </button>
                   </>
