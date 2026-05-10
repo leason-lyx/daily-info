@@ -1,0 +1,43 @@
+schema_version: 1
+presets:
+  - id: for-you
+    name: For You
+    description: 个性化与热门信号混合推荐
+    sort_order: -10
+    filter: {}
+    rank:
+      mode: for_you
+  - id: all
+    name: 全部
+    description: 全部已订阅源
+    sort_order: 0
+    filter: {}
+    rank:
+      mode: latest
+  - id: news
+    name: 新闻
+    description: 最近的 AI 和科技媒体新闻
+    sort_order: 10
+    filter:
+      groups: [AI News, Tech Media]
+      since: 3d
+    rank:
+      mode: latest
+  - id: papers
+    name: 论文
+    description: 最近一周的论文源
+    sort_order: 20
+    filter:
+      groups: [Papers]
+      since: 7d
+    rank:
+      mode: latest
+  - id: models
+    name: 模型
+    description: 模型厂商和实验室的新消息
+    sort_order: 30
+    filter:
+      groups: [Model Labs]
+      since: 7d
+    rank:
+      mode: latest

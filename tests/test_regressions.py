@@ -4,6 +4,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import yaml
+
 
 def run_python(script: str, database_url: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
@@ -25,12 +27,29 @@ def test_docker_context_keeps_source_pack_and_excludes_env_secrets() -> None:
     root = Path(__file__).resolve().parents[1]
     dockerfile = (root / "Dockerfile.api").read_text(encoding="utf-8")
     dockerignore = (root / ".dockerignore").read_text(encoding="utf-8")
+    compose = yaml.safe_load((root / "docker-compose.yml").read_text(encoding="utf-8"))
+    localhost_compose = yaml.safe_load((root / "docker-compose.localhost.yml").read_text(encoding="utf-8"))
 
     assert "COPY config ./config" in dockerfile
     assert "config" not in {line.strip().strip("/") for line in dockerignore.splitlines() if line.strip()}
     assert ".env.*" in dockerignore
     assert "!.env.example" in dockerignore
     assert "!.env.local.example" in dockerignore
+    api_volumes = compose["services"]["api"]["volumes"]
+    assert "./config/sources:/app/config/sources:ro" in api_volumes
+    assert "./config/feed-presets.yaml:/app/config/feed-presets.yaml:ro" in api_volumes
+    assert "network_mode" not in compose["services"]["api"]
+    assert compose["services"]["api"]["environment"]["DATABASE_URL"] == "${DATABASE_URL:-sqlite:////data/daily-info.db}"
+    assert compose["services"]["web"]["environment"]["NEXT_PUBLIC_API_BASE_URL"] == "${NEXT_PUBLIC_API_BASE_URL:-http://api:8000}"
+    for service_name in ("api", "worker", "scheduler", "web"):
+        service = localhost_compose["services"][service_name]
+        assert service["network_mode"] == "host"
+        assert "ports" not in service
+        assert service["environment"]["HTTP_PROXY"] == "${HTTP_PROXY:-}"
+    assert localhost_compose["services"]["api"]["command"] == ["uvicorn", "app.api:app", "--host", "127.0.0.1", "--port", "8000"]
+    assert localhost_compose["services"]["web"]["command"] == ["npm", "run", "start", "--", "-H", "0.0.0.0", "-p", "3000"]
+    assert localhost_compose["services"]["worker"]["environment"]["API_BASE_URL"] == "http://127.0.0.1:8000"
+    assert localhost_compose["services"]["rsshub"]["ports"] == ["127.0.0.1:1200:1200"]
 
 
 def test_api_smoke_uses_temp_database(tmp_path: Path) -> None:
@@ -41,7 +60,7 @@ def test_api_smoke_uses_temp_database(tmp_path: Path) -> None:
         from app.api import app
 
         with TestClient(app) as client:
-            for path in ["/api/items", "/api/sources", "/api/health", "/api/settings", "/api/clusters"]:
+            for path in ["/api/items", "/api/source-definitions", "/api/health", "/api/settings"]:
                 response = client.get(path)
                 assert response.status_code == 200, (path, response.status_code, response.text)
         print("ok")
@@ -276,7 +295,7 @@ def test_openai_summary_falls_back_to_next_enabled_provider(tmp_path: Path) -> N
         from app.db import SessionLocal, init_db
         from app.jobs import summarize_item_job
         from app.models import Item, LLMProvider, Source, Summary, SummaryStatus
-        from app.services import load_runtime_settings, set_setting_value
+        from app.services.core import load_runtime_settings, set_setting_value
 
         init_db()
         with SessionLocal() as db:
@@ -336,7 +355,7 @@ def test_openai_summary_marks_failed_when_all_providers_fail(tmp_path: Path) -> 
         from app.db import SessionLocal, init_db
         from app.jobs import summarize_item_job
         from app.models import Item, LLMProvider, Source, Summary, SummaryStatus
-        from app.services import load_runtime_settings, set_setting_value
+        from app.services.core import load_runtime_settings, set_setting_value
 
         init_db()
         with SessionLocal() as db:
@@ -388,7 +407,7 @@ def test_fetch_run_counts_only_new_summary_jobs_for_source(tmp_path: Path) -> No
         from app.db import SessionLocal, init_db
         from app.jobs import fetch_source_job
         from app.models import Item, Source, SourceAttempt, SourceSubscription, SummaryStatus
-        from app.services import queue_job
+        from app.job_queue import enqueue_summarize_item
         from app.config import get_settings
         from app.utils import dumps
 
@@ -431,7 +450,7 @@ def test_fetch_run_counts_only_new_summary_jobs_for_source(tmp_path: Path) -> No
             )
             db.add(existing)
             db.flush()
-            queue_job(db, "summarize_item", {"item_id": existing.id})
+            enqueue_summarize_item(db, existing.id)
             db.commit()
 
             async def fake_run_attempt(_attempt, _settings):
@@ -475,8 +494,8 @@ def test_persist_entries_deduplicates_arxiv_across_categories(tmp_path: Path) ->
         from app.adapters import RawEntryData
         from app.config import get_settings
         from app.db import SessionLocal, init_db
-        from app.models import Item, ItemSource, Source
-        from app.services import persist_entries, query_items
+        from app.models import Item, ItemSource, Source, UserItemState
+        from app.services.core import persist_entries, query_items
         from app.utils import dumps, loads
 
         init_db()
@@ -504,8 +523,8 @@ def test_persist_entries_deduplicates_arxiv_across_categories(tmp_path: Path) ->
                 raw_payload={"id": "http://arxiv.org/abs/2604.21771v2"},
             )
 
-            assert asyncio.run(persist_entries(db, ai, [first], settings))[1] == 1
-            assert asyncio.run(persist_entries(db, cl, [second], settings))[1] == 0
+            assert asyncio.run(persist_entries(db, ai, [first], settings)).item_count == 1
+            assert asyncio.run(persist_entries(db, cl, [second], settings)).item_count == 0
             assert db.execute(select(func.count()).select_from(Item)).scalar_one() == 1
             item = db.execute(select(Item)).scalar_one()
             assert item.dedupe_key == "arxiv:2604.21771"
@@ -534,8 +553,8 @@ def test_persist_entries_deduplicates_tracking_urls_and_preserves_user_state(tmp
         from app.adapters import RawEntryData
         from app.config import get_settings
         from app.db import SessionLocal, init_db
-        from app.models import Item, ItemSource, Source
-        from app.services import item_to_out, persist_entries
+        from app.models import Item, ItemSource, Source, UserItemState
+        from app.services.core import item_to_out, persist_entries
         from app.utils import dumps
 
         init_db()
@@ -563,22 +582,69 @@ def test_persist_entries_deduplicates_tracking_urls_and_preserves_user_state(tmp
 
             asyncio.run(persist_entries(db, primary, [first], settings))
             item = db.execute(select(Item)).scalar_one()
-            item.read = True
-            item.starred = True
+            db.add(UserItemState(item_id=item.id, read=True, starred=True))
             db.commit()
 
-            assert asyncio.run(persist_entries(db, repost, [second], settings))[1] == 0
+            assert asyncio.run(persist_entries(db, repost, [second], settings)).item_count == 0
             assert db.execute(select(func.count()).select_from(Item)).scalar_one() == 1
             item = db.execute(select(Item)).scalar_one()
-            assert item.read is True
-            assert item.starred is True
             assert item.raw_text == "Longer full text from the reposted feed."
             assert db.execute(select(func.count()).select_from(ItemSource)).scalar_one() == 2
             data = item_to_out(item, db)
+            assert data.read is True
+            assert data.starred is True
             assert [source.source_id for source in data.sources] == ["primary", "repost"]
         print("ok")
         """,
         sqlite_url(tmp_path / "dedupe-url-state.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_persist_entries_fetches_detail_from_current_source_url(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+
+        from app.adapters import RawEntryData
+        from app.config import get_settings
+        from app.db import SessionLocal, init_db
+        from app.models import Fulltext, Source
+        import app.services.core as core
+
+        seen_urls = []
+
+        async def fake_extract(url, timeout=20):
+            seen_urls.append(url)
+            return f"detail from {url}", ""
+
+        init_db()
+        settings = get_settings()
+        with SessionLocal() as db:
+            first_source = Source(id="first", name="First", content_type="blog", platform="web")
+            detail_source = Source(
+                id="detail",
+                name="Detail",
+                content_type="blog",
+                platform="web",
+                fulltext='{"mode":"detail_only","max_detail_pages_per_run":5}',
+            )
+            db.add_all([first_source, detail_source])
+            db.commit()
+
+            first = RawEntryData(title="Shared Launch", url="https://example.com/launch?utm_source=first", summary="short", content="short")
+            second = RawEntryData(title="Shared Launch", url="https://example.com/launch?utm_source=detail", summary="short", content="short")
+            asyncio.run(core.persist_entries(db, first_source, [first], settings))
+            core.extract_generic_article = fake_extract
+            result = asyncio.run(core.persist_entries(db, detail_source, [second], settings))
+
+            assert result.item_count == 0
+            assert seen_urls == ["https://example.com/launch?utm_source=detail"]
+            fulltext = db.query(Fulltext).filter(Fulltext.extractor == "generic_article").one()
+            assert fulltext.text == "detail from https://example.com/launch?utm_source=detail"
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "dedupe-current-source-detail.db"),
     )
     assert result.stdout.strip() == "ok"
 
@@ -594,7 +660,7 @@ def test_persist_entries_uses_feed_tagging_mode_and_filters_noise(tmp_path: Path
         from app.config import get_settings
         from app.db import SessionLocal, init_db
         from app.models import Item, ItemSource, Source
-        from app.services import persist_entries
+        from app.services.core import persist_entries
         from app.utils import dumps, loads
 
         init_db()
@@ -639,7 +705,7 @@ def test_persist_entries_default_tagging_mode_ignores_feed_tags(tmp_path: Path) 
         from app.config import get_settings
         from app.db import SessionLocal, init_db
         from app.models import Item, Source
-        from app.services import persist_entries
+        from app.services.core import persist_entries
         from app.utils import dumps, loads
 
         init_db()
@@ -682,7 +748,7 @@ def test_persist_entries_llm_tagging_uses_generated_tags_and_falls_back(tmp_path
         from app.config import get_settings
         from app.db import SessionLocal, init_db
         from app.models import Item, LLMUsageEvent, Source
-        from app.services import llm_usage_stats, persist_entries
+        from app.services.core import llm_usage_stats, persist_entries
         from app.utils import dumps, loads
 
         init_db()
@@ -714,8 +780,8 @@ def test_persist_entries_llm_tagging_uses_generated_tags_and_falls_back(tmp_path
                     "duration_ms": 25,
                 }
 
-            import app.services
-            app.services.generate_tags_openai_compatible = fake_generate
+            import app.services.core
+            app.services.core.generate_tags_openai_compatible = fake_generate
             first = RawEntryData(
                 title="AI Robotics",
                 url="https://example.com/llm-ok",
@@ -732,7 +798,7 @@ def test_persist_entries_llm_tagging_uses_generated_tags_and_falls_back(tmp_path
                 calls["count"] += 1
                 raise RuntimeError("provider failed")
 
-            app.services.generate_tags_openai_compatible = failing_generate
+            app.services.core.generate_tags_openai_compatible = failing_generate
             asyncio.run(persist_entries(db, source, [first], settings))
             item = db.execute(select(Item).where(Item.url == "https://example.com/llm-ok")).scalar_one()
             assert loads(item.tags, []) == ["media", "artificial-intelligence", "robotics"]
@@ -774,7 +840,7 @@ def test_persist_entries_llm_tagging_caps_generation_per_fetch(tmp_path: Path) -
         from app.config import get_settings
         from app.db import SessionLocal, init_db
         from app.models import Item, LLMUsageEvent, Source
-        from app.services import LLM_TAG_MAX_PER_FETCH, persist_entries
+        from app.services.core import LLM_TAG_MAX_PER_FETCH, persist_entries
         from app.utils import dumps, loads
 
         init_db()
@@ -802,8 +868,8 @@ def test_persist_entries_llm_tagging_caps_generation_per_fetch(tmp_path: Path) -
                 calls["count"] += 1
                 return {"tags": [f"generated-{calls['count']}"], "usage": {"total_tokens": 1}, "duration_ms": 1}
 
-            import app.services
-            app.services.generate_tags_openai_compatible = fake_generate
+            import app.services.core
+            app.services.core.generate_tags_openai_compatible = fake_generate
             entries = [
                 RawEntryData(
                     title=f"Item {idx}",
@@ -841,7 +907,7 @@ def test_dedupe_handles_arxiv_old_style_ids_and_linkless_titles(tmp_path: Path) 
         from app.config import get_settings
         from app.db import SessionLocal, init_db
         from app.models import Item, Source
-        from app.services import persist_entries
+        from app.services.core import persist_entries
 
         init_db()
         settings = get_settings()
@@ -852,13 +918,13 @@ def test_dedupe_handles_arxiv_old_style_ids_and_linkless_titles(tmp_path: Path) 
 
             first = RawEntryData(title="Old-style Arxiv", url="https://arxiv.org/abs/math.CO/0309136v1", raw_payload={"id": "math.CO/0309136v1"})
             second = RawEntryData(title="Old-style Arxiv", url="https://arxiv.org/pdf/math.CO/0309136v2", raw_payload={"id": "math.CO/0309136v2"})
-            assert asyncio.run(persist_entries(db, source, [first], settings))[1] == 1
-            assert asyncio.run(persist_entries(db, source, [second], settings))[1] == 0
+            assert asyncio.run(persist_entries(db, source, [first], settings)).item_count == 1
+            assert asyncio.run(persist_entries(db, source, [second], settings)).item_count == 0
 
             same_title_a = RawEntryData(title="Untitled Linkless", url="", published_at=datetime(2026, 4, 1, tzinfo=timezone.utc))
             same_title_b = RawEntryData(title="Untitled Linkless", url="", published_at=datetime(2026, 4, 2, tzinfo=timezone.utc))
-            assert asyncio.run(persist_entries(db, source, [same_title_a], settings))[1] == 1
-            assert asyncio.run(persist_entries(db, source, [same_title_b], settings))[1] == 1
+            assert asyncio.run(persist_entries(db, source, [same_title_a], settings)).item_count == 1
+            assert asyncio.run(persist_entries(db, source, [same_title_b], settings)).item_count == 1
             assert db.execute(select(func.count()).select_from(Item)).scalar_one() == 3
         print("ok")
         """,
@@ -917,46 +983,6 @@ def test_api_items_and_health_use_item_sources(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
-def test_cleanup_retired_source_keeps_items_with_remaining_sources(tmp_path: Path) -> None:
-    result = run_python(
-        """
-        from sqlalchemy import func, select
-
-        from app.db import SessionLocal, init_db
-        from app.models import Item, ItemSource, Source
-        from app.services import cleanup_retired_sources
-
-        init_db()
-        with SessionLocal() as db:
-            retired = Source(id="retired", name="Retired", content_type="blog", platform="old", is_builtin=True)
-            active = Source(id="active", name="Active", content_type="blog", platform="new")
-            db.add_all([retired, active])
-            db.flush()
-            item = Item(source_id="retired", canonical_url="https://example.com/shared", title="Shared retained item", url="https://example.com/shared", content_type="blog", platform="old", source_name="Retired")
-            db.add(item)
-            db.flush()
-            db.add_all([
-                ItemSource(item_id=item.id, source_id="retired", source_name="Retired", url="https://example.com/shared", canonical_url="https://example.com/shared"),
-                ItemSource(item_id=item.id, source_id="active", source_name="Active", url="https://active.example.com/shared", canonical_url="https://active.example.com/shared"),
-            ])
-            db.commit()
-
-            cleanup_retired_sources(db, {"retired"})
-            db.commit()
-
-            assert db.get(Source, "retired") is None
-            assert db.execute(select(func.count()).select_from(Item)).scalar_one() == 1
-            item = db.execute(select(Item)).scalar_one()
-            assert item.source_id == "active"
-            assert item.source_name == "Active"
-            assert db.execute(select(func.count()).select_from(ItemSource)).scalar_one() == 1
-        print("ok")
-        """,
-        sqlite_url(tmp_path / "retired-source-shared-item.db"),
-    )
-    assert result.stdout.strip() == "ok"
-
-
 def test_queue_auto_summaries_skips_items_with_active_summary_jobs(tmp_path: Path) -> None:
     result = run_python(
         """
@@ -967,7 +993,7 @@ def test_queue_auto_summaries_skips_items_with_active_summary_jobs(tmp_path: Pat
         from app.config import get_settings
         from app.db import SessionLocal, init_db
         from app.models import Item, ItemSource, Job, JobStatus, Source, SourceSubscription, SummaryStatus
-        from app.services import queue_auto_summaries
+        from app.services.core import queue_auto_summaries
         from app.utils import dumps
 
         init_db()
@@ -1167,17 +1193,17 @@ def test_builtin_sources_include_arxiv_api_categories(tmp_path: Path) -> None:
         from sqlalchemy import select
 
         from app.db import SessionLocal, init_db
-        from app.catalog import ARXIV_CS_AI_API_URL, ARXIV_CS_CL_API_URL, ARXIV_CS_SE_API_URL, DEFAULT_SOURCE_PACK_PATH
         from app.models import Source
-        from app.services import load_source_pack, seed_builtin_sources
+        from app.services.core import seed_builtin_sources
+        from app.source_catalog import load_source_catalog
         from app.utils import loads
 
         init_db()
         with SessionLocal() as db:
             seed_builtin_sources(db)
             source_ids = set(db.execute(select(Source.id)).scalars())
-            pack_ids = {source.id for source in load_source_pack(DEFAULT_SOURCE_PACK_PATH)}
-            assert pack_ids <= source_ids
+            catalog_ids = {definition.id for definition, _path in load_source_catalog()}
+            assert catalog_ids <= source_ids
             assert "arxiv-cs-se" in source_ids
             assert "arxiv-cs-cl" in source_ids
             source = db.get(Source, "arxiv-cs-se")
@@ -1186,7 +1212,7 @@ def test_builtin_sources_include_arxiv_api_categories(tmp_path: Path) -> None:
             assert source.homepage_url == "https://arxiv.org/list/cs.SE/recent"
             assert loads(source.default_tags, []) == ["paper", "software-engineering"]
             assert loads(source.tagging, {}) == {"mode": "feed", "max_tags": 5}
-            assert source.attempts[0].url == ARXIV_CS_SE_API_URL
+            assert source.attempts[0].url == "https://export.arxiv.org/api/query?search_query=cat:cs.SE&sortBy=submittedDate&sortOrder=descending&max_results=50"
             assert "rss.arxiv.org/rss/cs.SE" not in source.attempts[0].url
             source = db.get(Source, "arxiv-cs-cl")
             assert source.name == "arXiv cs.CL"
@@ -1194,14 +1220,14 @@ def test_builtin_sources_include_arxiv_api_categories(tmp_path: Path) -> None:
             assert source.homepage_url == "https://arxiv.org/list/cs.CL/recent"
             assert loads(source.default_tags, []) == ["paper", "nlp"]
             assert loads(source.tagging, {}) == {"mode": "feed", "max_tags": 5}
-            assert source.attempts[0].url == ARXIV_CS_CL_API_URL
+            assert source.attempts[0].url == "https://export.arxiv.org/api/query?search_query=cat:cs.CL&sortBy=submittedDate&sortOrder=descending&max_results=50"
             assert "rss.arxiv.org/rss/cs.CL" not in source.attempts[0].url
             source = db.get(Source, "arxiv-cs-ai")
             assert source.name == "arXiv cs.AI"
             assert source.content_type == "paper"
             assert loads(source.default_tags, []) == ["paper", "ai"]
             assert loads(source.tagging, {}) == {"mode": "feed", "max_tags": 5}
-            assert source.attempts[0].url == ARXIV_CS_AI_API_URL
+            assert source.attempts[0].url == "https://export.arxiv.org/api/query?search_query=cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=50"
             assert "rss.arxiv.org/rss/cs.AI" not in source.attempts[0].url
         print("ok")
         """,
@@ -1210,13 +1236,12 @@ def test_builtin_sources_include_arxiv_api_categories(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
-def test_default_pack_adds_ai_and_tech_media_sources(tmp_path: Path) -> None:
+def test_source_catalog_adds_ai_and_tech_media_sources(tmp_path: Path) -> None:
     result = run_python(
         """
-        from app.catalog import DEFAULT_SOURCE_PACK_PATH
-        from app.services import load_source_pack
+        from app.source_catalog import load_source_catalog
 
-        sources = {source.id: source for source in load_source_pack(DEFAULT_SOURCE_PACK_PATH)}
+        sources = {source.id: source for source, _path in load_source_catalog()}
         expected_blog_sources = {
             "google-ai-blog",
             "google-deepmind-blog",
@@ -1239,11 +1264,11 @@ def test_default_pack_adds_ai_and_tech_media_sources(tmp_path: Path) -> None:
         }
         for source_id in expected_blog_sources:
             source = sources[source_id]
-            assert source.content_type == "blog"
-            assert source.fulltext["strategy"] == "feed_or_detail"
-            assert source.fulltext["min_feed_fulltext_chars"] == 1200
-            assert source.fulltext["max_fulltext_per_run"] == 20
-            assert source.attempts[0].adapter == "feed"
+            assert source.kind == "blog"
+            assert source.fulltext.mode == "feed_then_detail"
+            assert source.fulltext.min_feed_chars == 1200
+            assert source.fulltext.max_detail_pages_per_run == 20
+            assert source.fetch.attempts[0].adapter == "feed"
         assert {sources[source_id].group for source_id in tech_media_sources} == {"Tech Media"}
         print("ok")
         """,
@@ -1260,7 +1285,7 @@ def test_catalog_sources_are_opt_in_subscriptions(tmp_path: Path) -> None:
         from app.db import SessionLocal, init_db
         from app.jobs import schedule_due_sources
         from app.models import Job, SourceSubscription
-        from app.services import list_source_definitions, sync_default_source_pack
+        from app.services.core import list_source_definitions, sync_default_source_pack
         from app.subscriptions import subscribe_source
 
         init_db()
@@ -1397,7 +1422,7 @@ def test_source_definitions_expose_latest_item_freshness(tmp_path: Path) -> None
 
         from app.db import SessionLocal, init_db
         from app.models import Item, ItemSource, Source, SourceAttempt, SourceRun
-        from app.services import list_source_definitions
+        from app.services.core import list_source_definitions
 
         init_db()
         with SessionLocal() as db:
@@ -1460,7 +1485,7 @@ def test_source_definitions_expose_latest_item_freshness(tmp_path: Path) -> None
     assert result.stdout.strip() == "ok"
 
 
-def test_source_definition_patch_writes_yaml_and_syncs_database(tmp_path: Path) -> None:
+def test_source_definition_patch_writes_db_without_mutating_builtin_yaml(tmp_path: Path) -> None:
     catalog_dir = tmp_path / "catalog"
     source_yaml = """
 schema_version: 1
@@ -1505,6 +1530,7 @@ sources:
         source_catalog.SOURCE_CATALOG_DIR.mkdir(parents=True, exist_ok=True)
         source_file = source_catalog.SOURCE_CATALOG_DIR / "test.yaml"
         source_file.write_text({source_yaml!r}, encoding="utf-8")
+        original_yaml = source_file.read_text(encoding="utf-8")
 
         from app.api import app
         from app.db import SessionLocal
@@ -1526,8 +1552,6 @@ sources:
             assert response.status_code == 200, response.text
             data = response.json()
             assert data["summary"] == {{"auto": True, "window_days": 3}}
-            assert data["auto_summary_enabled"] is True
-            assert data["auto_summary_days"] == 3
             assert data["fetch"]["interval_seconds"] == 7200
 
             refreshed = client.get("/api/source-definitions")
@@ -1535,14 +1559,14 @@ sources:
             row = next(source for source in refreshed.json() if source["id"] == "editable")
             assert row["summary"] == {{"auto": True, "window_days": 3}}
 
+        assert source_file.read_text(encoding="utf-8") == original_yaml
         payload = yaml.safe_load(source_file.read_text(encoding="utf-8"))
         raw = payload["sources"][0]
-        assert raw["summary"] == {{"auto": True, "window_days": 3}}
-        assert raw["fetch"]["interval_seconds"] == 7200
-        assert raw["fulltext"]["mode"] == "feed_then_detail"
-        assert raw["tagging"] == {{"mode": "llm", "max_tags": 6}}
-        assert raw["tags"] == ["new", "ai"]
-        assert raw["filters"] == {{"include_keywords": ["research"], "exclude_keywords": ["sponsored"]}}
+        assert raw["summary"] == {{"auto": False, "window_days": 7}}
+        assert raw["fetch"]["interval_seconds"] == 3600
+        assert raw["fulltext"]["mode"] == "feed_only"
+        assert raw["tagging"] == {{"mode": "default", "max_tags": 5}}
+        assert raw["tags"] == ["old"]
 
         with SessionLocal() as db:
             source = db.get(Source, "editable")
@@ -1554,7 +1578,8 @@ sources:
             assert source.language_hint == "zh-CN"
             assert loads(source.spec_json, {{}})["summary"] == {{"auto": True, "window_days": 3}}
             assert source.spec_hash
-            assert source.catalog_file == "test.yaml"
+            assert source.catalog_file == "db"
+            assert source.catalog_origin == "custom"
         print("ok")
         """,
         sqlite_url(tmp_path / "source-definition-patch.db"),
@@ -1624,13 +1649,12 @@ sources:
     assert result.stdout.strip() == "ok"
 
 
-def test_create_source_definition_writes_custom_yaml(tmp_path: Path) -> None:
+def test_create_source_definition_writes_db_catalog_without_custom_yaml(tmp_path: Path) -> None:
     catalog_dir = tmp_path / "catalog"
     result = run_python(
         f"""
         from pathlib import Path
 
-        import yaml
         from fastapi.testclient import TestClient
 
         import app.source_catalog as source_catalog
@@ -1664,22 +1688,69 @@ def test_create_source_definition_writes_custom_yaml(tmp_path: Path) -> None:
         with TestClient(app) as client:
             response = client.post("/api/source-definitions", json=payload)
             assert response.status_code == 200, response.text
-            assert response.json()["catalog_file"] == "custom.yaml"
+            assert response.json()["catalog_file"] == "db"
 
         custom_file = source_catalog.SOURCE_CATALOG_DIR / "custom.yaml"
-        data = yaml.safe_load(custom_file.read_text(encoding="utf-8"))
-        assert data["schema_version"] == 1
-        assert [source["id"] for source in data["sources"]] == ["custom-web"]
-        assert data["sources"][0]["summary"] == {{"auto": True, "window_days": 5}}
+        assert not custom_file.exists()
 
         with SessionLocal() as db:
             source = db.get(Source, "custom-web")
-            assert source.catalog_file == "custom.yaml"
-            subscription = db.get(SourceSubscription, "custom-web")
+            assert source.catalog_file == "db"
+            assert source.catalog_origin == "custom"
+            subscription = db.get(SourceSubscription, ("default", "custom-web"))
             assert subscription and subscription.subscribed
         print("ok")
         """,
         sqlite_url(tmp_path / "source-definition-custom-yaml.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_source_definition_projection_uses_default_profile_subscription(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from fastapi.testclient import TestClient
+
+        from app.api import app
+        from app.db import SessionLocal
+        from app.models import SourceSubscription
+
+        payload = {
+            "id": "multi-profile",
+            "title": "Multi Profile",
+            "kind": "blog",
+            "platform": "custom",
+            "homepage": "https://example.com",
+            "language": "en",
+            "tags": ["custom"],
+            "group": "Custom",
+            "priority": 100,
+            "fetch": {
+                "strategy": "first_success",
+                "interval_seconds": 3600,
+                "attempts": [{"adapter": "feed", "url": "https://example.com/feed.xml"}],
+            },
+            "fulltext": {"mode": "feed_only"},
+            "summary": {"auto": False, "window_days": 7},
+            "auth": {"mode": "none"},
+        }
+
+        with TestClient(app) as client:
+            response = client.post("/api/source-definitions", json=payload)
+            assert response.status_code == 200, response.text
+
+        with SessionLocal() as db:
+            db.add(SourceSubscription(profile_id="other", source_id="multi-profile", subscribed=True, priority_override=0))
+            db.commit()
+
+        with TestClient(app) as client:
+            rows = client.get("/api/source-definitions").json()
+            row = next(source for source in rows if source["id"] == "multi-profile")
+            assert row["subscribed"] is True
+            assert row["effective_priority"] == 100
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "source-definition-default-profile.db"),
     )
     assert result.stdout.strip() == "ok"
 
@@ -1689,7 +1760,7 @@ def test_feed_defaults_to_subscribed_sources(tmp_path: Path) -> None:
         """
         from app.db import SessionLocal, init_db
         from app.models import Item, ItemSource, Source, SourceSubscription
-        from app.services import query_items
+        from app.services.core import query_items
 
         init_db()
         with SessionLocal() as db:
@@ -1723,63 +1794,372 @@ def test_feed_defaults_to_subscribed_sources(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
-def test_export_source_pack_strips_runtime_identity(tmp_path: Path) -> None:
+def test_feed_presets_priority_filters_and_events(tmp_path: Path) -> None:
     result = run_python(
         """
-        import yaml
+        from datetime import datetime, timedelta, timezone
 
+        from fastapi.testclient import TestClient
+        from sqlalchemy import func, select
+
+        from app.api import app
         from app.db import SessionLocal, init_db
-        from app.services import export_source_pack, seed_builtin_sources
+        from app.models import FeedPreset, Item, ItemSource, Source, SourceSubscription, UserItemEvent
+        from app.services.core import create_feed_preset, item_to_out, list_feed_presets, query_items, resolve_item_query_params, sync_feed_presets
+        from app.utils import dumps
 
         init_db()
+        now = datetime.now(timezone.utc)
         with SessionLocal() as db:
-            seed_builtin_sources(db)
-            payload = yaml.safe_load(export_source_pack(db))
-            assert payload["version"] == 1
-            assert payload["sources"]
-            assert all("is_builtin" not in source for source in payload["sources"])
-            assert all("content_audit" not in source for source in payload["sources"])
-            assert all("id" not in attempt for source in payload["sources"] for attempt in source["attempts"])
+            sync_feed_presets(db)
+            preset_ids = [preset["id"] for preset in list_feed_presets(db)]
+            assert preset_ids[:5] == ["for-you", "all", "news", "papers", "models"]
+            news_preset = db.get(FeedPreset, "news")
+            news_preset.sort_order = 99
+            news_preset.hidden = True
+            db.commit()
+            sync_feed_presets(db)
+            db.refresh(news_preset)
+            assert news_preset.sort_order == 99
+            assert news_preset.hidden is True
+
+            db.add_all([
+                Source(id="core", name="Core Lab", content_type="blog", platform="core", group="Model Labs", priority=10, default_tags=dumps(["models"])),
+                Source(id="override-low", name="Override Low", content_type="blog", platform="media", group="Tech Media", priority=5, default_tags=dumps(["media"])),
+                Source(id="paper", name="Paper Source", content_type="paper", platform="arxiv", group="Papers", priority=40, default_tags=dumps(["paper"])),
+                Source(id="unsubscribed-core", name="Unsubscribed Core", content_type="blog", platform="core", group="Model Labs", priority=0),
+            ])
+            db.add_all([
+                SourceSubscription(source_id="core", subscribed=True),
+                SourceSubscription(source_id="override-low", subscribed=True, priority_override=130),
+                SourceSubscription(source_id="paper", subscribed=True),
+            ])
+            db.flush()
+            core_item = Item(source_id="core", canonical_url="https://example.com/core", title="Core update", url="https://example.com/core", content_type="blog", platform="core", source_name="Core Lab", published_at=now, tags=dumps(["models"]))
+            low_item = Item(source_id="override-low", canonical_url="https://example.com/low", title="Low priority update", url="https://example.com/low", content_type="blog", platform="media", source_name="Override Low", published_at=now)
+            shared_item = Item(source_id="override-low", canonical_url="https://example.com/shared", title="Shared paper", url="https://example.com/shared", content_type="paper", platform="arxiv", source_name="Override Low", published_at=now - timedelta(days=2), tags=dumps(["paper", "models"]))
+            db.add_all([core_item, low_item, shared_item])
+            db.flush()
+            db.add_all([
+                ItemSource(item_id=core_item.id, source_id="core", source_name="Core Lab", url=core_item.url, canonical_url=core_item.canonical_url),
+                ItemSource(item_id=low_item.id, source_id="override-low", source_name="Override Low", url=low_item.url, canonical_url=low_item.canonical_url),
+                ItemSource(item_id=shared_item.id, source_id="override-low", source_name="Override Low", url=shared_item.url, canonical_url=shared_item.canonical_url),
+                ItemSource(item_id=shared_item.id, source_id="paper", source_name="Paper Source", url=shared_item.url, canonical_url=shared_item.canonical_url),
+                ItemSource(item_id=shared_item.id, source_id="unsubscribed-core", source_name="Unsubscribed Core", url=shared_item.url, canonical_url=shared_item.canonical_url),
+            ])
+            custom = create_feed_preset(db, {"name": "Paper View", "filter": {"groups": ["Papers"], "since": "7d"}, "rank": {"mode": "latest"}})
+            db.commit()
+
+            items, total = query_items(db, priority_tier=["p0"])
+            assert total == 1
+            assert items[0].id == core_item.id
+            items, total = query_items(db, priority_tier=["p0"], include_unsubscribed=True)
+            assert total == 2
+
+            items, total = query_items(db, priority_tier=["p1"])
+            assert total == 1
+            assert items[0].id == shared_item.id
+
+            resolved = resolve_item_query_params(db, preset_id=custom["id"])
+            items, total = query_items(db, **resolved)
+            assert total == 1
+            assert items[0].id == shared_item.id
+
+            resolved = resolve_item_query_params(db, preset_id=custom["id"], priority_tier=["p0"])
+            items, total = query_items(db, **resolved)
+            assert total == 0
+            resolved = resolve_item_query_params(db, preset_id=custom["id"], since="")
+            assert resolved["since"] == ""
+            items, total = query_items(db, **resolved)
+            assert total == 1
+
+            core_id = core_item.id
+            shared_id = shared_item.id
+
+        with TestClient(app) as client:
+            response = client.post(f"/api/items/{core_id}/read", json={})
+            assert response.status_code == 200, response.text
+            response = client.post(f"/api/items/{core_id}/events", json={"event_type": "open", "metadata": {"surface": "test"}})
+            assert response.status_code == 200, response.text
+
+        with SessionLocal() as db:
+            assert db.execute(select(func.count()).select_from(UserItemEvent).where(UserItemEvent.item_id == core_id)).scalar_one() == 2
+            db.add(UserItemEvent(item_id=shared_id, event_type="star", metadata_json="{}"))
+            db.commit()
+            items, total = query_items(db, rank="recommended")
+            assert total == 3
+            assert items[0]._recommendation_score is not None
+            rendered = item_to_out(items[0], db)
+            assert rendered.recommendation_reasons
+            assert db.get(FeedPreset, custom["id"]).is_builtin is False
         print("ok")
         """,
-        sqlite_url(tmp_path / "export-pack.db"),
+        sqlite_url(tmp_path / "feed-presets-priority-events.db"),
     )
     assert result.stdout.strip() == "ok"
 
 
-def test_user_owned_arxiv_cs_se_attempt_is_not_overwritten(tmp_path: Path) -> None:
+def test_for_you_profile_trends_feedback_and_cached_scores(tmp_path: Path) -> None:
     result = run_python(
         """
-        from app.catalog import ARXIV_CS_SE_API_URL
-        from app.db import SessionLocal, init_db
-        from app.models import Source, SourceAttempt
-        from app.services import seed_builtin_sources
+        from datetime import datetime, timedelta, timezone
 
-        custom_url = "https://example.com/my-cs-se.xml"
+        from fastapi.testclient import TestClient
+        from sqlalchemy import select
+
+        from app.api import app
+        from app.db import SessionLocal, init_db
+        from app.models import Item, ItemRecommendationScore, ItemSource, Source, SourceSubscription, UserItemEvent, UserPreference
+        from app.services.core import build_recommendation_profile, query_items, resolve_item_query_params, score_recommendations, sync_feed_presets, upsert_external_trend_signal
+        from app.utils import dumps, loads
 
         init_db()
+        now = datetime.now(timezone.utc)
         with SessionLocal() as db:
-            source = Source(
-                id="arxiv-cs-se",
-                name="My cs.SE",
-                content_type="paper",
-                platform="arxiv",
-                is_builtin=False,
+            sync_feed_presets(db)
+            db.add_all([
+                Source(id="lab", name="Model Lab", content_type="blog", platform="openai", group="Model Labs", priority=30),
+                Source(id="media", name="Tech Media", content_type="blog", platform="media", group="Tech Media", priority=110),
+            ])
+            db.add_all([
+                SourceSubscription(source_id="lab", subscribed=True),
+                SourceSubscription(source_id="media", subscribed=True),
+            ])
+            agent = Item(
+                source_id="lab",
+                canonical_url="https://example.com/agent",
+                title="OpenAI agent breakthrough",
+                url="https://example.com/agent",
+                content_type="blog",
+                platform="openai",
+                source_name="Model Lab",
+                published_at=now - timedelta(hours=2),
+                summary="AI agents can now coordinate research workflows.",
+                raw_text="AI agents research workflows OpenAI",
+                tags=dumps(["agents", "models"]),
+                entities=dumps(["OpenAI"]),
             )
-            source.attempts = [SourceAttempt(adapter="feed", url=custom_url)]
-            db.add(source)
+            gadget = Item(
+                source_id="media",
+                canonical_url="https://example.com/gadget",
+                title="Consumer gadget roundup",
+                url="https://example.com/gadget",
+                content_type="blog",
+                platform="media",
+                source_name="Tech Media",
+                published_at=now - timedelta(hours=1),
+                summary="Phones and laptops.",
+                tags=dumps(["hardware"]),
+            )
+            db.add_all([agent, gadget])
+            db.flush()
+            db.add_all([
+                ItemSource(item_id=agent.id, source_id="lab", source_name="Model Lab", url=agent.url, canonical_url=agent.canonical_url, tags=dumps(["agents"])),
+                ItemSource(item_id=gadget.id, source_id="media", source_name="Tech Media", url=gadget.url, canonical_url=gadget.canonical_url, tags=dumps(["hardware"])),
+            ])
+            upsert_external_trend_signal(
+                db,
+                provider="hn",
+                signal_key="hn-agent",
+                title="OpenAI agent breakthrough",
+                url=agent.url,
+                score=92,
+                tags=["agents"],
+                entities=["OpenAI"],
+            )
             db.commit()
+            agent_id = agent.id
 
-            seed_builtin_sources(db)
-            source = db.get(Source, "arxiv-cs-se")
-            assert source.name == "My cs.SE"
-            assert source.is_builtin is False
-            assert len(source.attempts) == 1
-            assert source.attempts[0].url == custom_url
-            assert source.attempts[0].url != ARXIV_CS_SE_API_URL
+        with TestClient(app) as client:
+            response = client.patch(
+                "/api/recommendation/profile",
+                json={"interests": ["AI agents"], "tags": ["agents"], "entities": ["OpenAI"], "trend_providers": ["hn"]},
+            )
+            assert response.status_code == 200, response.text
+            profile = response.json()
+            assert profile["interests"] == ["AI agents"]
+
+        with SessionLocal() as db:
+            resolved = resolve_item_query_params(db, preset_id="for-you")
+            items, total = query_items(db, **resolved)
+            assert total == 2
+            assert items[0].id == agent_id
+            assert "hn trend" in items[0]._recommendation_reasons
+            assert items[0]._recommendation_components["trend_breakthrough"] > 0
+
+            build_recommendation_profile(db)
+            scored = score_recommendations(db)
+            assert scored == 2
+            cache = db.execute(select(ItemRecommendationScore).where(ItemRecommendationScore.item_id == agent_id)).scalar_one()
+            assert cache.score > 40
+            components = loads(cache.components_json, {})
+            assert components["personal_match"] > 0
+            assert components["trend_breakthrough"] > 0
+            resolved = resolve_item_query_params(db, preset_id="for-you")
+            items, total = query_items(db, **resolved)
+            assert total == 2
+            assert items[0].id == agent_id
+            assert "hn trend" in items[0]._recommendation_reasons
+
+        with TestClient(app) as client:
+            response = client.post(f"/api/items/{agent_id}/events", json={"event_type": "less_like_this", "metadata": {"surface": "test"}})
+            assert response.status_code == 200, response.text
+            response = client.post(f"/api/items/{agent_id}/events", json={"event_type": "dismiss"})
+            assert response.status_code == 200, response.text
+
+        with SessionLocal() as db:
+            events = db.execute(select(UserItemEvent.event_type).where(UserItemEvent.item_id == agent_id)).scalars().all()
+            assert "less_like_this" in events
+            assert "dismiss" in events
+            row = db.get(UserPreference, "default")
+            implicit = loads(row.implicit_json, {})
+            assert implicit["tags"]["agents"] < 0
+            expired_cache = db.execute(select(ItemRecommendationScore).where(ItemRecommendationScore.item_id == agent_id)).scalar_one()
+            expires_at = expired_cache.expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            assert expires_at < datetime.now(timezone.utc)
+            resolved = resolve_item_query_params(db, preset_id="for-you")
+            items, total = query_items(db, **resolved)
+            assert total == 2
+            assert items[0].id != agent_id
         print("ok")
         """,
-        sqlite_url(tmp_path / "user-cs-se-preserve.db"),
+        sqlite_url(tmp_path / "for-you-recommendations.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_for_you_candidate_window_matches_query_and_scoring(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from sqlalchemy import select
+
+        from app.db import SessionLocal, init_db
+        from app.models import Item, ItemRecommendationScore, ItemSource, Source, SourceSubscription
+        from app.services.core import query_items, resolve_item_query_params, score_recommendations, sync_feed_presets
+
+        init_db()
+        now = datetime.now(timezone.utc)
+        with SessionLocal() as db:
+            sync_feed_presets(db)
+            db.add(Source(id="core", name="Core Lab", content_type="blog", platform="lab", group="Model Labs", priority=10))
+            db.add(SourceSubscription(source_id="core", subscribed=True))
+            recent = Item(
+                source_id="core",
+                canonical_url="https://example.com/recent",
+                title="Recent core update",
+                url="https://example.com/recent",
+                content_type="blog",
+                platform="lab",
+                source_name="Core Lab",
+                published_at=now - timedelta(days=5),
+            )
+            old_published = Item(
+                source_id="core",
+                canonical_url="https://example.com/old-published",
+                title="Old published update",
+                url="https://example.com/old-published",
+                content_type="blog",
+                platform="lab",
+            source_name="Core Lab",
+            published_at=now - timedelta(days=100),
+            created_at=now,
+        )
+            old_without_publish_time = Item(
+                source_id="core",
+                canonical_url="https://example.com/old-created",
+                title="Important undated update",
+                url="https://example.com/old-created",
+                content_type="blog",
+                platform="lab",
+            source_name="Core Lab",
+            published_at=None,
+            created_at=now - timedelta(days=60),
+        )
+            db.add_all([recent, old_published, old_without_publish_time])
+            db.flush()
+            for item in [recent, old_published, old_without_publish_time]:
+                db.add(ItemSource(item_id=item.id, source_id="core", source_name="Core Lab", url=item.url, canonical_url=item.canonical_url))
+            db.commit()
+            old_id = old_published.id
+            undated_id = old_without_publish_time.id
+
+            resolved = resolve_item_query_params(db, preset_id="for-you")
+            items, total = query_items(db, **resolved)
+            ids = {item.id for item in items}
+            assert total == 2
+            assert old_id not in ids
+            assert undated_id in ids
+
+            assert score_recommendations(db) == 2
+            scored_ids = set(db.execute(select(ItemRecommendationScore.item_id)).scalars().all())
+            assert old_id not in scored_ids
+            assert undated_id in scored_ids
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "for-you-window.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_recommendation_scheduler_queues_pipeline_once(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+
+        from sqlalchemy import select
+
+        import app.jobs as jobs
+        from app.config import get_settings
+        from app.db import SessionLocal, init_db
+        from app.models import Job, JobStatus
+
+        init_db()
+        calls = []
+
+        def fake_refresh(db, profile_id="default"):
+            calls.append(f"refresh:{profile_id}")
+            return 0
+
+        def fake_build(db, profile_id="default"):
+            calls.append(f"build:{profile_id}")
+            return None
+
+        def fake_score(db, profile_id="default"):
+            calls.append(f"score:{profile_id}")
+            return 0
+
+        jobs.refresh_external_trends = fake_refresh
+        jobs.build_recommendation_profile = fake_build
+        jobs.score_recommendations = fake_score
+
+        with SessionLocal() as db:
+            assert jobs.schedule_recommendation_jobs(db, interval_seconds=900) == 1
+            assert jobs.schedule_recommendation_jobs(db, interval_seconds=900) == 0
+            rows = db.execute(select(Job).order_by(Job.id)).scalars().all()
+            assert [row.type for row in rows] == ["refresh_external_trends"]
+
+            refresh = rows[0]
+            asyncio.run(jobs.run_job(db, refresh, get_settings()))
+            assert refresh.status == JobStatus.succeeded.value
+            build = db.execute(select(Job).where(Job.type == "build_recommendation_profile")).scalar_one()
+            assert build.status == JobStatus.queued.value
+
+            asyncio.run(jobs.run_job(db, build, get_settings()))
+            assert build.status == JobStatus.succeeded.value
+            score = db.execute(select(Job).where(Job.type == "score_recommendations")).scalar_one()
+            assert score.status == JobStatus.queued.value
+
+            asyncio.run(jobs.run_job(db, score, get_settings()))
+            assert score.status == JobStatus.succeeded.value
+            assert calls == ["refresh:default", "build:default", "score:default"]
+            assert {job.attempts for job in db.execute(select(Job)).scalars()} == {1}
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "recommendation-jobs.db"),
     )
     assert result.stdout.strip() == "ok"
 
@@ -1845,7 +2225,7 @@ def test_page_index_adapter_parses_reader_fallback_dates(tmp_path: Path) -> None
                 request = httpx.Request("GET", url)
                 if url == "https://openai.com/research/":
                     return httpx.Response(403, text="blocked", request=request)
-                if url.startswith("https://r.jina.ai/"):
+                if url == "https://r.jina.ai/https://openai.com/research/":
                     return httpx.Response(200, text=markdown, request=request)
                 raise AssertionError(url)
 
@@ -1932,42 +2312,6 @@ def test_page_index_adapter_fills_anthropic_featured_date_from_detail(tmp_path: 
     assert result.stdout.strip() == "ok"
 
 
-def test_user_owned_arxiv_cs_cl_attempt_is_not_overwritten(tmp_path: Path) -> None:
-    result = run_python(
-        """
-        from sqlalchemy import select
-
-        from app.catalog import ARXIV_CS_CL_API_URL
-        from app.db import SessionLocal, init_db
-        from app.models import Source, SourceAttempt
-        from app.services import seed_builtin_sources
-
-        custom_url = "https://example.com/my-cs-cl.xml"
-
-        init_db()
-        with SessionLocal() as db:
-            source = Source(id="arxiv-cs-cl", name="My cs.CL", content_type="paper", platform="arxiv", is_builtin=False)
-            source.attempts = [SourceAttempt(adapter="feed", url=custom_url)]
-            db.add(source)
-            db.commit()
-
-            seed_builtin_sources(db)
-            source = db.get(Source, "arxiv-cs-cl")
-            assert source is not None
-            assert source.name == "My cs.CL"
-            assert source.is_builtin is False
-            assert len(source.attempts) == 1
-            assert source.attempts[0].url == custom_url
-            assert source.attempts[0].url != ARXIV_CS_CL_API_URL
-            source_ids = set(db.execute(select(Source.id)).scalars())
-            assert "arxiv-cs-se" in source_ids
-        print("ok")
-        """,
-        sqlite_url(tmp_path / "user-cs-cl-preserve.db"),
-    )
-    assert result.stdout.strip() == "ok"
-
-
 def test_settings_test_ai_none_provider_does_not_persist(tmp_path: Path) -> None:
     result = run_python(
         """
@@ -2009,7 +2353,7 @@ def test_rsshub_runtime_settings_are_config_file_authoritative(tmp_path: Path) -
         from app.config import get_settings
         from app.db import SessionLocal, init_db
         from app.models import Setting
-        from app.services import load_runtime_settings
+        from app.services.core import load_runtime_settings
         from app.utils import dumps
 
         get_settings.cache_clear()

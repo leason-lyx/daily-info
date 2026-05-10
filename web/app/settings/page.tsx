@@ -2,7 +2,8 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, FlaskConical, Plus, Save, Trash2 } from "lucide-react";
-import { AiProviderTestResult, api, LlmProvider, LlmUsage, LlmUsageBucket } from "@/lib/api";
+import { settingsApi } from "@/lib/apiDomains";
+import type { AiProviderTestResult, LlmProvider, LlmUsage, LlmUsageBucket, RecommendationProfile } from "@/lib/api";
 
 type Settings = {
   database_url?: string;
@@ -31,6 +32,17 @@ type ProviderForm = {
   last_error?: string;
 };
 
+type RecommendationForm = {
+  interests: string;
+  excluded_terms: string;
+  source_ids: string;
+  tags: string;
+  entities: string;
+  platforms: string;
+  content_types: string;
+  trend_providers: string;
+};
+
 export default function SettingsPage() {
   const [settings, setSettings] = useState<Settings>({});
   const [form, setForm] = useState({
@@ -45,22 +57,61 @@ export default function SettingsPage() {
   const [providerTestResults, setProviderTestResults] = useState<Record<string, AiProviderTestResult>>({});
   const [testingId, setTestingId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [recommendationProfile, setRecommendationProfile] = useState<RecommendationProfile | null>(null);
+  const [recommendationForm, setRecommendationForm] = useState<RecommendationForm>(emptyRecommendationForm());
+  const [savingRecommendation, setSavingRecommendation] = useState(false);
 
   useEffect(() => {
     void loadSettings();
   }, []);
 
   async function loadSettings() {
-    const data = await api.settings();
-    const current = data as Settings;
-    setSettings(current);
     setError("");
-    setForm({
-      llm_provider_type: current.llm_provider_type || "none",
-      codex_cli_path: current.codex_cli_path || "codex",
-      codex_cli_model: current.codex_cli_model || "",
-    });
-    setProviders(providerForms(current));
+    try {
+      const data = await settingsApi.settings();
+      const current = data as Settings;
+      setSettings(current);
+      setForm({
+        llm_provider_type: current.llm_provider_type || "none",
+        codex_cli_path: current.codex_cli_path || "codex",
+        codex_cli_model: current.codex_cli_model || "",
+      });
+      setProviders(providerForms(current));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    try {
+      const profile = await settingsApi.getRecommendationProfile();
+      setRecommendationProfile(profile);
+      setRecommendationForm(profileToForm(profile));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function saveRecommendation() {
+    setSavingRecommendation(true);
+    setMessage("");
+    setError("");
+    try {
+      const saved = await settingsApi.patchRecommendationProfile({
+        interests: splitList(recommendationForm.interests),
+        excluded_terms: splitList(recommendationForm.excluded_terms),
+        source_ids: splitList(recommendationForm.source_ids),
+        tags: splitList(recommendationForm.tags),
+        entities: splitList(recommendationForm.entities),
+        platforms: splitList(recommendationForm.platforms),
+        content_types: splitList(recommendationForm.content_types),
+        trend_providers: splitList(recommendationForm.trend_providers),
+      });
+      setRecommendationProfile(saved);
+      setRecommendationForm(profileToForm(saved));
+      setMessage("推荐偏好已保存。");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingRecommendation(false);
+    }
   }
 
   async function save(event: FormEvent) {
@@ -69,7 +120,7 @@ export default function SettingsPage() {
     setMessage("");
     setError("");
     try {
-      await api.patchSettings(settingsBody());
+      await settingsApi.patchSettings(settingsBody());
       await loadSettings();
       setCodexTestResult(null);
       setProviderTestResults({});
@@ -86,7 +137,7 @@ export default function SettingsPage() {
     setCodexTestResult(null);
     setError("");
     try {
-      setCodexTestResult(await api.testAiProvider(settingsBody()));
+      setCodexTestResult(await settingsApi.testAiProvider(settingsBody()));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -103,7 +154,7 @@ export default function SettingsPage() {
     });
     setError("");
     try {
-      const result = await api.testAiProvider({
+      const result = await settingsApi.testAiProvider({
         llm_provider_type: "openai_compatible",
         llm_providers: [providerPayload(provider, index)],
       });
@@ -196,6 +247,70 @@ export default function SettingsPage() {
             {settings.llm_configured ? "configured" : "not configured"}
             {settings.llm_provider_type === "openai_compatible" ? ` · ${savedActiveProviders.length} enabled` : ""}
           </span>
+        </div>
+      </section>
+
+      <section className="settingsSection">
+        <div className="settingsSectionHead withStatus">
+          <h2>推荐偏好</h2>
+          <span className="statusText">{recommendationProfile ? `updated ${formatDate(recommendationProfile.updated_at)}` : "loading"}</span>
+        </div>
+        <div className="settingsBlock">
+          <div className="settingsProviderGrid">
+            <ListField
+              id="recommendation-interests"
+              label="兴趣词"
+              value={recommendationForm.interests}
+              onChange={(value) => setRecommendationForm({ ...recommendationForm, interests: value })}
+            />
+            <ListField
+              id="recommendation-excluded"
+              label="排除词"
+              value={recommendationForm.excluded_terms}
+              onChange={(value) => setRecommendationForm({ ...recommendationForm, excluded_terms: value })}
+            />
+            <ListField
+              id="recommendation-source-ids"
+              label="关注源 ID"
+              value={recommendationForm.source_ids}
+              onChange={(value) => setRecommendationForm({ ...recommendationForm, source_ids: value })}
+            />
+            <ListField
+              id="recommendation-tags"
+              label="关注标签"
+              value={recommendationForm.tags}
+              onChange={(value) => setRecommendationForm({ ...recommendationForm, tags: value })}
+            />
+            <ListField
+              id="recommendation-entities"
+              label="关注实体"
+              value={recommendationForm.entities}
+              onChange={(value) => setRecommendationForm({ ...recommendationForm, entities: value })}
+            />
+            <ListField
+              id="recommendation-platforms"
+              label="平台"
+              value={recommendationForm.platforms}
+              onChange={(value) => setRecommendationForm({ ...recommendationForm, platforms: value })}
+            />
+            <ListField
+              id="recommendation-content-types"
+              label="内容类型"
+              value={recommendationForm.content_types}
+              onChange={(value) => setRecommendationForm({ ...recommendationForm, content_types: value })}
+            />
+            <ListField
+              id="recommendation-trend-providers"
+              label="外部热度"
+              value={recommendationForm.trend_providers}
+              onChange={(value) => setRecommendationForm({ ...recommendationForm, trend_providers: value })}
+            />
+          </div>
+          <div className="settingsActions">
+            <button className="button primary" type="button" onClick={() => void saveRecommendation()} disabled={savingRecommendation}>
+              <Save size={16} /> {savingRecommendation ? "Saving" : "保存推荐偏好"}
+            </button>
+          </div>
         </div>
       </section>
 
@@ -402,6 +517,58 @@ function TestNotice({ result }: { result: AiProviderTestResult }) {
         : result.error || "Provider test failed."}
     </div>
   );
+}
+
+function ListField({ id, label, value, onChange }: { id: string; label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="field">
+      <label htmlFor={id}>{label}</label>
+      <textarea id={id} rows={3} value={value} onChange={(event) => onChange(event.target.value)} />
+    </div>
+  );
+}
+
+function emptyRecommendationForm(): RecommendationForm {
+  return {
+    interests: "",
+    excluded_terms: "",
+    source_ids: "",
+    tags: "",
+    entities: "",
+    platforms: "",
+    content_types: "",
+    trend_providers: "hn",
+  };
+}
+
+function profileToForm(profile: RecommendationProfile): RecommendationForm {
+  return {
+    interests: joinList(profile.interests),
+    excluded_terms: joinList(profile.excluded_terms),
+    source_ids: joinList(profile.source_ids),
+    tags: joinList(profile.tags),
+    entities: joinList(profile.entities),
+    platforms: joinList(profile.platforms),
+    content_types: joinList(profile.content_types),
+    trend_providers: joinList(profile.trend_providers),
+  };
+}
+
+function splitList(value: string) {
+  const seen = new Set<string>();
+  return value
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (!item || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function joinList(values: string[] | undefined) {
+  return (values || []).join("\n");
 }
 
 function UsageCell({ label, bucket }: { label: string; bucket?: LlmUsageBucket }) {

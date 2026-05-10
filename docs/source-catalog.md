@@ -16,9 +16,9 @@ Source Catalog 是 Daily Info 的核心配置资产。它把“系统知道有�
 config/sources/
 ```
 
-每个 YAML 文件包含一组 source definitions。应用启动时会同步这些定义到数据库。同步不会把未订阅 source 自动加入默认 feed。
+每个 YAML 文件包含一组只读内置 source definitions。应用启动时会把这些 seed 同步到数据库。同步不会把未订阅 source 自动加入默认 feed。
 
-`/sources` 页面可以编辑低风险 source 配置，并展示最近抓取时间、最新内容发布时间和本次抓取新增数量。保存时后端会先更新对应 YAML 文件，再把同一份 definition 同步到数据库，避免“网页显示值”和“下次启动同步值”分裂。网页新建的 custom source 会写入 `config/sources/custom.yaml`。
+运行时 catalog 以数据库为准：`/sources` 页面编辑或新建 source 时，后端只更新数据库中的 definition，不会修改仓库里的 `config/sources/*.yaml`。内置 YAML 继续作为可审查、可版本管理的 seed；用户自定义和覆盖配置保存在数据库。本轮不保留旧 source-pack 导入/导出 API，需要版本化运行时修改时应人工审查数据库中的 definition，再整理成新的 `config/sources/*.yaml` 变更。
 
 `Personal Posts` 分组用于单人更新源，既可以包含社交媒体账号，也可以包含个人博客。有官方 RSS 或 Atom 的个人博客优先使用 `feed` adapter；X/Twitter 账号默认使用 RSSHub route。
 
@@ -119,6 +119,18 @@ Source catalog 不能包含真实 secret 值。
 
 网页编辑也遵守同一规则：不要在 source 的标签、过滤词、URL、metadata 或 auth 字段里保存真实 secret。
 
+## Feed 预设与优先级
+
+Feed 首页支持用预设一键切换阅读视图。内置预设定义在 `config/feed-presets.yaml`，自定义预设保存在数据库。预设只保存筛选和排序偏好，不会自动订阅 source，也不会改变 catalog definition。
+
+source 优先级使用“数字越小越重要”的规则：P0 为 0-24，P1 为 25-74，P2 为 75-124，P3 为 125 及以上。默认展示优先使用订阅上的 `priority_override`，没有覆盖值时使用 source definition 的 `priority`。因为 item 会跨 source 去重，feed 的优先级和 group/source 过滤都按 `item_sources` 判断：只要任一来源命中筛选，这条 item 就会进入候选集。
+
+`rank=recommended` 保留轻量请求时规则排序；内置 `For You` 预设使用 `rank=for_you`，默认候选窗口是最近 30 天内容，重要源的未读内容可放宽到 90 天。`For You` 优先读取 `ItemRecommendationScore` 缓存，缓存缺失或过期时回退到同一套可解释规则。
+
+`For You` 分数由显式推荐偏好、带时间衰减的行为事件、source 有效优先级、发布时间、内容质量、多来源站内热度和外部趋势信号组成。用户可以在 Settings 里编辑兴趣词、排除词、关注 source id、标签/实体/平台/内容类型和外部热度 provider。Feed 中的“更多类似 / 减少类似 / 不感兴趣”会写入 item event，用于后续画像和排序，并让相关推荐缓存过期。
+
+推荐相关表包括 `user_preferences`、`item_embeddings`、`external_trend_signals`、`item_recommendation_scores` 和 `recommendation_runs`。第一阶段仍按单用户设计，统一使用 `profile_id="default"`；推荐只改变排序和解释，不会自动订阅 source，也不会改变去重后的来源归属。
+
 ## 新增 Source 建议
 
 优先级：
@@ -133,4 +145,4 @@ Source catalog 不能包含真实 secret 值。
 - 在 `/sources` 里 preview。
 - 订阅后手动 fetch 一次。
 - 到 `/health` 查看最近 run、错误和全文覆盖情况。
-- 如果从网页修改 source 配置，确认对应 `config/sources/*.yaml` 已更新。
+- 如果需要版本化运行时修改，人工审查数据库中的 definition 后整理成 `config/sources/*.yaml` 变更。

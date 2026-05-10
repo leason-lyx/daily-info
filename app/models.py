@@ -2,9 +2,10 @@ from datetime import datetime, timezone
 from enum import Enum
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.context import DEFAULT_PROFILE_ID
 from app.db import Base
 
 
@@ -45,6 +46,9 @@ class Source(Base):
     homepage_url: Mapped[str] = mapped_column(Text, default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    catalog_origin: Mapped[str] = mapped_column(String(40), default="builtin", index=True)
+    catalog_status: Mapped[str] = mapped_column(String(40), default="active", index=True)
+    catalog_version: Mapped[int] = mapped_column(Integer, default=1)
     group: Mapped[str] = mapped_column(String(120), default="General")
     priority: Mapped[int] = mapped_column(Integer, default=100)
     poll_interval: Mapped[int] = mapped_column(Integer, default=3600)
@@ -72,13 +76,14 @@ class Source(Base):
     )
     items: Mapped[list["Item"]] = relationship(back_populates="source")
     runs: Mapped[list["SourceRun"]] = relationship(back_populates="source")
-    subscription: Mapped["SourceSubscription"] = relationship(back_populates="source", cascade="all, delete-orphan")
+    subscriptions: Mapped[list["SourceSubscription"]] = relationship(back_populates="source", cascade="all, delete-orphan")
     runtime: Mapped["SourceRuntime"] = relationship(back_populates="source", cascade="all, delete-orphan")
 
 
 class SourceSubscription(Base):
     __tablename__ = "source_subscriptions"
 
+    profile_id: Mapped[str] = mapped_column(String(80), primary_key=True, default=DEFAULT_PROFILE_ID)
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True)
     subscribed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     priority_override: Mapped[int | None] = mapped_column(Integer)
@@ -86,7 +91,22 @@ class SourceSubscription(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
-    source: Mapped[Source] = relationship(back_populates="subscription")
+    source: Mapped[Source] = relationship(back_populates="subscriptions")
+
+
+class FeedPreset(Base):
+    __tablename__ = "feed_presets"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=100)
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    filter_json: Mapped[str] = mapped_column(Text, default="{}")
+    rank_json: Mapped[str] = mapped_column(Text, default='{"mode":"latest"}')
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class SourceRuntime(Base):
@@ -178,15 +198,29 @@ class Item(Base):
     raw_text: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[str] = mapped_column(Text, default="[]")
     entities: Mapped[str] = mapped_column(Text, default="[]")
-    read: Mapped[bool] = mapped_column(Boolean, default=False)
-    starred: Mapped[bool] = mapped_column(Boolean, default=False)
-    hidden: Mapped[bool] = mapped_column(Boolean, default=False)
     summary_status: Mapped[str] = mapped_column(String(40), default=SummaryStatus.not_configured.value, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     source: Mapped[Source] = relationship(back_populates="items")
     sources: Mapped[list["ItemSource"]] = relationship(back_populates="item", cascade="all, delete-orphan")
+    user_states: Mapped[list["UserItemState"]] = relationship(back_populates="item", cascade="all, delete-orphan")
+
+
+class UserItemState(Base):
+    __tablename__ = "user_item_states"
+    __table_args__ = (UniqueConstraint("profile_id", "item_id", name="uq_user_item_state_profile_item"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_id: Mapped[str] = mapped_column(String(80), default=DEFAULT_PROFILE_ID, index=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), index=True)
+    read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    starred: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    item: Mapped[Item] = relationship(back_populates="user_states")
 
 
 class ItemSource(Base):
@@ -207,6 +241,96 @@ class ItemSource(Base):
     source: Mapped[Source] = relationship()
 
 
+class UserItemEvent(Base):
+    __tablename__ = "user_item_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_id: Mapped[str] = mapped_column(String(80), default=DEFAULT_PROFILE_ID, index=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), index=True)
+    event_type: Mapped[str] = mapped_column(String(40), index=True)
+    source_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    item: Mapped[Item] = relationship()
+
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+
+    profile_id: Mapped[str] = mapped_column(String(80), primary_key=True, default="default")
+    explicit_json: Mapped[str] = mapped_column(Text, default="{}")
+    implicit_json: Mapped[str] = mapped_column(Text, default="{}")
+    excluded_json: Mapped[str] = mapped_column(Text, default="{}")
+    settings_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ItemEmbedding(Base):
+    __tablename__ = "item_embeddings"
+
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
+    model: Mapped[str] = mapped_column(String(120), default="local-hash-v1")
+    input_hash: Mapped[str] = mapped_column(String(64), default="")
+    vector_json: Mapped[str] = mapped_column(Text, default="[]")
+    text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    item: Mapped[Item] = relationship()
+
+
+class ExternalTrendSignal(Base):
+    __tablename__ = "external_trend_signals"
+    __table_args__ = (UniqueConstraint("provider", "signal_key", name="uq_trend_provider_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(80), index=True)
+    signal_key: Mapped[str] = mapped_column(String(180), index=True)
+    url: Mapped[str] = mapped_column(Text, default="")
+    title: Mapped[str] = mapped_column(Text, default="")
+    tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    entities_json: Mapped[str] = mapped_column(Text, default="[]")
+    score: Mapped[float] = mapped_column(Float, default=0.0)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ItemRecommendationScore(Base):
+    __tablename__ = "item_recommendation_scores"
+    __table_args__ = (UniqueConstraint("item_id", "profile_id", "rank_mode", name="uq_item_recommendation_score"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), index=True)
+    profile_id: Mapped[str] = mapped_column(String(80), default="default", index=True)
+    rank_mode: Mapped[str] = mapped_column(String(40), default="for_you", index=True)
+    score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    components_json: Mapped[str] = mapped_column(Text, default="{}")
+    reasons_json: Mapped[str] = mapped_column(Text, default="[]")
+    model_version: Mapped[str] = mapped_column(String(80), default="")
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    item: Mapped[Item] = relationship()
+
+
+class RecommendationRun(Base):
+    __tablename__ = "recommendation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_type: Mapped[str] = mapped_column(String(80), default="")
+    profile_id: Mapped[str] = mapped_column(String(80), default="default")
+    status: Mapped[str] = mapped_column(String(40), default="running")
+    model_version: Mapped[str] = mapped_column(String(80), default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+
+
 class Fulltext(Base):
     __tablename__ = "fulltexts"
 
@@ -224,11 +348,16 @@ class Job(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     type: Mapped[str] = mapped_column(String(60), index=True)
+    queue: Mapped[str] = mapped_column(String(60), default="default", index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=100, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(180), default="", index=True)
     status: Mapped[str] = mapped_column(String(40), default=JobStatus.queued.value, index=True)
     payload: Mapped[str] = mapped_column(Text, default="{}")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str] = mapped_column(String(120), default="")
@@ -273,24 +402,6 @@ class LLMUsageEvent(Base):
     usage_json: Mapped[str] = mapped_column(Text, default="{}")
     duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
-class Cluster(Base):
-    __tablename__ = "clusters"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
-    title: Mapped[str] = mapped_column(Text, default="")
-    reason: Mapped[str] = mapped_column(Text, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-
-
-class ClusterItem(Base):
-    __tablename__ = "cluster_items"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    cluster_id: Mapped[str] = mapped_column(ForeignKey("clusters.id", ondelete="CASCADE"), index=True)
-    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), index=True)
-    reason: Mapped[str] = mapped_column(Text, default="")
 
 
 class Setting(Base):

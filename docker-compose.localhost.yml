@@ -1,0 +1,41 @@
+services:
+  api:
+    network_mode: host
+    command: ["uvicorn", "app.api:app", "--host", "127.0.0.1", "--port", "8000"]
+    environment:
+      API_BASE_URL: http://127.0.0.1:8000
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+
+  worker:
+    network_mode: host
+    environment:
+      API_BASE_URL: http://127.0.0.1:8000
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+
+  scheduler:
+    network_mode: host
+    environment:
+      API_BASE_URL: http://127.0.0.1:8000
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+
+  web:
+    network_mode: host
+    command: ["npm", "run", "start", "--", "-H", "0.0.0.0", "-p", "3000"]
+    build:
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://127.0.0.1:8000}
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://127.0.0.1:8000}
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      ALL_PROXY: ${ALL_PROXY:-}
+
+  rsshub:
+    ports:
+      - "127.0.0.1:1200:1200"

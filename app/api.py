@@ -3,66 +3,88 @@ import shutil
 from typing import Annotated
 from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Query, Response
+import httpx
+from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.adapters import AdapterError, preview_source
+from app.config import get_settings
+from app.application.items import ItemNotFound, set_item_flag
 from app.db import get_db, init_db
+from app.job_queue import enqueue_fetch_source, enqueue_summarize_item
 from app.jobs import schedule_auto_summaries, schedule_due_sources
-from app.models import Item, ItemSource, Job, JobStatus, LLMProvider, Source, SourceRun, SourceSubscription, Summary, SummaryStatus
+from app.models import Item, Job, JobStatus, LLMProvider, Source, SourceRun, SourceSubscription, Summary, SummaryStatus
 from app.schemas import (
     AiProviderTestResult,
+    FeedPresetIn,
+    FeedPresetOut,
+    FeedPresetPatch,
+    ItemEventIn,
+    ItemEventOut,
     ItemListOut,
     LLMProviderIn,
     PreviewRequest,
     PreviewResponse,
+    RecommendationProfileOut,
+    RecommendationProfilePatch,
     SourceDefinitionPatch,
     SettingsOut,
     SettingsPatch,
     SourceDefinitionIn,
     SourceDefinitionOut,
-    SourceOut,
-    SourcePatch,
     SourceSubscriptionOut,
 )
-from app.services import (
-    content_audit_for_source,
-    create_source_definition,
-    export_source_pack,
-    import_source_pack,
-    item_to_out,
-    item_sources_for_item,
+from app.services.feed_query import (
+    create_feed_preset,
+    delete_feed_preset,
+    list_feed_presets,
+    patch_feed_preset,
+    query_items,
+    resolve_item_query_params,
+)
+from app.services.core import queue_auto_summaries, reconcile_auto_summary_statuses
+from app.services.llm_providers import (
     ensure_initial_llm_provider,
-    list_source_definitions,
     list_llm_providers,
-    load_runtime_settings,
     llm_provider_out,
     llm_usage_stats,
-    latest_runs,
-    patch_source,
-    patch_source_definition,
-    query_items,
-    queue_auto_summaries,
-    queue_job,
-    reconcile_auto_summary_statuses,
-    sync_default_source_pack,
-    source_content_stats,
-    source_summary_stats,
-    source_to_out,
+    load_runtime_settings,
     set_setting_value,
 )
-from app.subscriptions import subscribe_source, subscription_to_dict, unsubscribe_source
+from app.services.presenters import (
+    content_audit_for_source,
+    item_sources_for_item,
+    item_to_out,
+    latest_runs,
+    source_content_stats,
+    source_summary_stats,
+)
+from app.services.recommendations import (
+    get_recommendation_profile,
+    record_item_event,
+    patch_recommendation_profile,
+)
+from app.services.source_definitions import (
+    create_source_definition,
+    list_source_definitions,
+    patch_source_definition,
+    sync_default_source_pack,
+)
+from app.context import DEFAULT_PROFILE_ID
+from app.subscriptions import get_subscription, subscribe_source, subscription_to_dict, unsubscribe_source
 from app.summary import summarize_codex_cli, summarize_openai_compatible
 from app.utils import dumps, loads
 
 
 app = FastAPI(title="Daily Info API", version="0.1.0")
+api_settings = get_settings()
+cors_origins = api_settings.cors_origins or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials="*" not in cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -84,20 +106,45 @@ Db = Annotated[Session, Depends(get_db)]
 @app.get("/api/items", response_model=ItemListOut)
 def get_items(
     db: Db,
+    preset_id: str | None = None,
     source_id: list[str] | None = Query(default=None),
-    source_group: str | None = None,
-    platform: str | None = None,
+    source_group: list[str] | None = Query(default=None),
+    platform: list[str] | None = Query(default=None),
     include_unsubscribed: bool = False,
     q: str | None = None,
     since: str | None = None,
     summary_status: str | None = None,
     read: bool | None = None,
     starred: bool | None = None,
-    hidden: bool | None = False,
+    hidden: bool | None = None,
+    priority_tier: list[str] | None = Query(default=None),
+    priority_min: int | None = Query(default=None, ge=0),
+    priority_max: int | None = Query(default=None, ge=0),
+    rank: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> ItemListOut:
-    items, total = query_items(db, source_id, source_group, platform, include_unsubscribed, q, since, summary_status, read, starred, hidden, limit, offset)
+    try:
+        resolved = resolve_item_query_params(
+            db,
+            preset_id=preset_id,
+            source_id=source_id,
+            source_group=source_group,
+            platform=platform,
+            q=q,
+            since=since,
+            summary_status=summary_status,
+            read=read,
+            starred=starred,
+            hidden=hidden,
+            priority_tier=priority_tier,
+            priority_min=priority_min,
+            priority_max=priority_max,
+            rank=rank,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Feed preset not found") from exc
+    items, total = query_items(db, include_unsubscribed=include_unsubscribed, limit=limit, offset=offset, **resolved)
     return ItemListOut(items=[item_to_out(item, db) for item in items], total=total)
 
 
@@ -110,13 +157,10 @@ def get_item(item_id: str, db: Db):
 
 
 def _set_item_flag(db: Session, item_id: str, field: str, value: bool | None):
-    item = db.get(Item, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    current = getattr(item, field)
-    setattr(item, field, (not current) if value is None else value)
-    db.commit()
-    return item_to_out(item, db)
+    try:
+        return set_item_flag(db, item_id, field, value)
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail="Item not found") from exc
 
 
 @app.post("/api/items/{item_id}/read")
@@ -134,6 +178,24 @@ def mark_hide(item_id: str, db: Db, value: bool | None = Body(default=None, embe
     return _set_item_flag(db, item_id, "hidden", value)
 
 
+@app.post("/api/items/{item_id}/events", response_model=ItemEventOut)
+def create_item_event(item_id: str, payload: ItemEventIn, db: Db):
+    try:
+        return ItemEventOut(**record_item_event(db, item_id, payload.event_type, payload.source_id, payload.metadata))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Item not found") from exc
+
+
+@app.get("/api/recommendation/profile", response_model=RecommendationProfileOut)
+def get_recommendation_profile_endpoint(db: Db):
+    return RecommendationProfileOut(**get_recommendation_profile(db))
+
+
+@app.patch("/api/recommendation/profile", response_model=RecommendationProfileOut)
+def patch_recommendation_profile_endpoint(payload: RecommendationProfilePatch, db: Db):
+    return RecommendationProfileOut(**patch_recommendation_profile(db, payload.model_dump(mode="json", exclude_unset=True)))
+
+
 @app.post("/api/items/{item_id}/resummarize")
 def resummarize(item_id: str, db: Db):
     item = db.get(Item, item_id)
@@ -143,17 +205,43 @@ def resummarize(item_id: str, db: Db):
     item.summary_status = SummaryStatus.pending.value if settings.llm_configured else SummaryStatus.not_configured.value
     db.commit()
     if settings.llm_configured:
-        queue_job(db, "summarize_item", {"item_id": item_id})
+        enqueue_summarize_item(db, item_id)
     return item_to_out(item, db)
+
+
+@app.get("/api/feed-presets", response_model=list[FeedPresetOut])
+def get_feed_presets(db: Db, include_hidden: bool = False):
+    return [FeedPresetOut(**preset) for preset in list_feed_presets(db, include_hidden=include_hidden)]
+
+
+@app.post("/api/feed-presets", response_model=FeedPresetOut)
+def create_feed_preset_endpoint(payload: FeedPresetIn, db: Db):
+    return FeedPresetOut(**create_feed_preset(db, payload.model_dump(mode="json", exclude_none=True)))
+
+
+@app.patch("/api/feed-presets/{preset_id}", response_model=FeedPresetOut)
+def update_feed_preset_endpoint(preset_id: str, payload: FeedPresetPatch, db: Db):
+    try:
+        return FeedPresetOut(**patch_feed_preset(db, preset_id, payload.model_dump(mode="json", exclude_unset=True)))
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Feed preset not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/api/feed-presets/{preset_id}")
+def delete_feed_preset_endpoint(preset_id: str, db: Db):
+    try:
+        delete_feed_preset(db, preset_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Feed preset not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"deleted": preset_id}
 
 
 @app.get("/api/source-definitions", response_model=list[SourceDefinitionOut])
 def get_source_definitions(db: Db):
-    return list_source_definitions(db)
-
-
-@app.get("/api/sources", response_model=list[SourceDefinitionOut])
-def get_sources(db: Db):
     return list_source_definitions(db)
 
 
@@ -167,7 +255,7 @@ def create_source_catalog_entry(payload: SourceDefinitionIn, db: Db):
 
 @app.patch("/api/source-definitions/{source_id}", response_model=SourceDefinitionOut)
 def update_source_catalog_entry(source_id: str, payload: SourceDefinitionPatch, db: Db):
-    source = db.execute(select(Source).options(selectinload(Source.attempts), selectinload(Source.subscription), selectinload(Source.runtime)).where(Source.id == source_id)).scalar_one_or_none()
+    source = db.execute(select(Source).options(selectinload(Source.attempts), selectinload(Source.subscriptions), selectinload(Source.runtime)).where(Source.id == source_id)).scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Source definition not found")
     try:
@@ -181,19 +269,13 @@ def update_source_catalog_entry(source_id: str, payload: SourceDefinitionPatch, 
     return updated
 
 
-@app.post("/api/sources", response_model=SourceDefinitionOut)
-def create_source(payload: SourceDefinitionIn, db: Db):
-    try:
-        return create_source_definition(db, payload, subscribe=True)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
 @app.get("/api/subscriptions", response_model=list[SourceSubscriptionOut])
 def get_subscriptions(db: Db):
     return [
         SourceSubscriptionOut(**subscription_to_dict(subscription))
-        for subscription in db.execute(select(SourceSubscription).where(SourceSubscription.subscribed.is_(True))).scalars()
+        for subscription in db.execute(
+            select(SourceSubscription).where(SourceSubscription.profile_id == DEFAULT_PROFILE_ID, SourceSubscription.subscribed.is_(True))
+        ).scalars()
     ]
 
 
@@ -215,27 +297,14 @@ def unsubscribe(source_id: str, db: Db):
     return SourceSubscriptionOut(**subscription_to_dict(subscription))
 
 
-@app.patch("/api/sources/{source_id}", response_model=SourceOut)
-def update_source(source_id: str, payload: SourcePatch, db: Db):
-    source = db.execute(select(Source).options(selectinload(Source.attempts)).where(Source.id == source_id)).scalar_one_or_none()
-    if not source:
-        raise HTTPException(status_code=404, detail="Source not found")
-    patch_source(db, source, payload)
-    db.commit()
-    db.refresh(source)
-    if payload.auto_summary_enabled is not None or payload.auto_summary_days is not None:
-        queue_auto_summaries(db, load_runtime_settings(db), source_id=source.id, limit=20)
-    return source_to_out(source)
-
-
 @app.post("/api/sources/{source_id}/fetch")
 def fetch_source_now(source_id: str, db: Db):
     if not db.get(Source, source_id):
         raise HTTPException(status_code=404, detail="Source not found")
-    subscription = db.get(SourceSubscription, source_id)
+    subscription = get_subscription(db, source_id)
     if not subscription or not subscription.subscribed:
         raise HTTPException(status_code=409, detail="Subscribe source before fetching")
-    job = queue_job(db, "fetch_source", {"source_id": source_id})
+    job = enqueue_fetch_source(db, source_id)
     return {"job_id": job.id, "status": job.status}
 
 
@@ -252,6 +321,8 @@ async def source_preview(payload: PreviewRequest, db: Db):
         result = await preview_source(url, route, adapter, load_runtime_settings(db), timeout_seconds=timeout_seconds)
     except AdapterError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": exc.message}) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail={"code": "preview_fetch_failed", "message": str(exc)}) from exc
     entries = [
         {
             "title": entry.title,
@@ -265,18 +336,6 @@ async def source_preview(payload: PreviewRequest, db: Db):
         for entry in result.entries[:5]
     ]
     return PreviewResponse(detected_adapter=adapter, entries=entries, warnings=result.warnings, used_url=result.used_url)
-
-
-@app.post("/api/sources/import")
-def import_sources(db: Db, source_pack: str = Body(media_type="text/yaml")):
-    imported = import_source_pack(db, source_pack)
-    queued = queue_auto_summaries(db, load_runtime_settings(db), limit=20)
-    return {"imported": imported, "summary_queued": queued}
-
-
-@app.get("/api/sources/export")
-def export_sources(db: Db):
-    return Response(export_source_pack(db), media_type="text/yaml")
 
 
 JOB_STATUSES = [
@@ -360,7 +419,7 @@ def _job_health(db: Session) -> dict:
 @app.get("/api/health")
 def health(db: Db):
     runs = db.execute(select(SourceRun).order_by(SourceRun.id.desc()).limit(50)).scalars().all()
-    sources = db.execute(select(Source).options(selectinload(Source.subscription))).scalars().all()
+    sources = db.execute(select(Source).options(selectinload(Source.subscriptions))).scalars().all()
     items_total = db.execute(select(func.count(Item.id))).scalar_one()
     items_24h = db.execute(select(func.count(Item.id)).where(Item.created_at >= datetime.now(timezone.utc) - timedelta(days=1))).scalar_one()
     summary_total = db.execute(select(func.count(Summary.id))).scalar_one()
@@ -377,7 +436,8 @@ def health(db: Db):
     source_health = []
     degraded_sources = []
     for source in sources:
-        subscribed = bool(source.subscription and source.subscription.subscribed)
+        subscription = get_subscription(db, source.id)
+        subscribed = bool(subscription and subscription.subscribed)
         latest = latest_by_source.get(source.id)
         recent_source_runs = [run for run in runs if run.source_id == source.id]
         consecutive_failures = 0
@@ -646,8 +706,3 @@ async def test_ai_provider(payload: SettingsPatch, db: Db):
 def run_scheduler_once(db: Db):
     settings = load_runtime_settings(db)
     return {"scheduled": schedule_due_sources(db), "summary_queued": schedule_auto_summaries(db, settings)}
-
-
-@app.get("/api/clusters")
-def get_clusters():
-    return {"clusters": []}

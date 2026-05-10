@@ -2,7 +2,8 @@
 
 import { FormEvent, useState } from "react";
 import { Eye, Save } from "lucide-react";
-import { api, SourceDefinitionInput } from "@/lib/api";
+import { sourcesApi } from "@/lib/apiDomains";
+import type { SourceDefinitionInput } from "@/lib/api";
 
 function slugify(value: string) {
   return value.toLowerCase().replace(/https?:\/\//, "").replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 72);
@@ -30,7 +31,7 @@ export default function NewSourcePage() {
     event.preventDefault();
     setMessage("");
     try {
-      const data = await api.previewSource({ url: url || undefined, route: route || undefined, adapter, content_type: contentType });
+      const data = await sourcesApi.previewSource({ url: url || undefined, route: route || undefined, adapter, content_type: contentType });
       setPreview(data);
       if (!name && Array.isArray(data.entries) && data.entries[0]) {
         setName(String((data.entries[0] as Record<string, unknown>).title || ""));
@@ -70,7 +71,7 @@ export default function NewSourcePage() {
       stability: "user",
     };
     try {
-      const created = await api.createSource(source);
+      const created = await sourcesApi.createSource(source);
       setMessage(`Saved ${created.id}`);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : String(err));

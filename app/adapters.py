@@ -184,7 +184,7 @@ async def fetch_html_index(url: str, timeout: int = 20) -> AdapterResult:
 
 
 def _reader_url(url: str) -> str:
-    return f"https://r.jina.ai/http://r.jina.ai/http://{url}"
+    return f"https://r.jina.ai/{url}"
 
 
 def _published_date(text: str) -> Any:

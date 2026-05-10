@@ -9,13 +9,13 @@ from urllib.parse import urlparse
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.catalog import SOURCE_CATALOG_DIR
 from app.config import get_settings
 from app.db import SessionLocal, init_db
 from app.jobs import fetch_source_job
 from app.models import Fulltext, Item, ItemSource, Source
-from app.services import content_audit_for_source, latest_runs, sync_default_source_pack, source_content_stats
-from app.source_catalog import load_source_catalog
+from app.services.presenters import content_audit_for_source, latest_runs, source_content_stats
+from app.services.source_definitions import sync_default_source_pack
+from app.source_catalog import SOURCE_CATALOG_DIR, load_source_catalog
 from app.utils import dumps, loads
 
 

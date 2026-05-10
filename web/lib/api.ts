@@ -1,60 +1,25 @@
-const configuredApiBase = process.env.NEXT_PUBLIC_API_BASE_URL;
-
-function isLoopbackHost(hostname: string) {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
-}
-
-function apiBase() {
-  if (configuredApiBase) {
-    const trimmed = configuredApiBase.replace(/\/$/, "");
-    if (typeof window !== "undefined" && !isLoopbackHost(window.location.hostname)) {
-      try {
-        const parsed = new URL(trimmed);
-        if (isLoopbackHost(parsed.hostname)) {
-          parsed.protocol = window.location.protocol;
-          parsed.hostname = window.location.hostname;
-          return parsed.toString().replace(/\/$/, "");
-        }
-      } catch {
-        return trimmed;
-      }
-    }
-    return trimmed;
-  }
-  if (typeof window !== "undefined") {
-    return `${window.location.protocol}//${window.location.hostname}:8000`;
-  }
-  return "http://localhost:8000";
-}
-
 export type Source = {
   id: string;
   title: string;
   kind: "paper" | "blog" | "post";
-  name: string;
-  content_type: "paper" | "blog" | "post";
   platform: string;
   homepage: string;
-  homepage_url: string;
   language: string;
   tags: string[];
-  enabled: boolean;
   subscribed: boolean;
-  is_builtin: boolean;
+  effective_priority: number;
+  priority_tier: string;
   group: string;
   priority: number;
-  poll_interval: number;
-  auto_summary_enabled: boolean;
-  auto_summary_days: number;
-  language_hint: string;
-  include_keywords: string[];
-  exclude_keywords: string[];
-  default_tags: string[];
-  attempts: SourceAttempt[];
   fetch: SourceFetch;
   summary: SourceSummary;
   tagging: SourceTagging;
+  filters: {
+    include_keywords: string[];
+    exclude_keywords: string[];
+  };
   auth: Record<string, unknown>;
+  stability: string;
   runtime?: SourceRuntime | null;
   latest_item_published_at?: string | null;
   latest_item_ingested_at?: string | null;
@@ -63,20 +28,7 @@ export type Source = {
   catalog_file?: string;
   fulltext: Record<string, unknown>;
   content_audit?: Record<string, unknown>;
-  auth_mode: string;
-  stability_level: string;
   latest_run?: LatestRun | null;
-};
-
-export type SourceAttempt = {
-  id?: number;
-  kind: string;
-  adapter: string;
-  url: string;
-  route: string;
-  priority: number;
-  enabled: boolean;
-  config: Record<string, unknown>;
 };
 
 export type SourceFetchAttempt = {
@@ -299,66 +251,48 @@ export type Item = {
   starred: boolean;
   hidden: boolean;
   summary_status: string;
+  recommendation_score?: number | null;
+  recommendation_reasons?: string[];
+  recommendation_components?: Record<string, number>;
   sources: ItemSource[];
 };
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${apiBase()}${path}`, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers || {}),
-    },
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(readableError(text, res.statusText));
-  }
-  return res.json() as Promise<T>;
-}
+export type FeedPreset = {
+  id: string;
+  name: string;
+  description: string;
+  is_builtin: boolean;
+  sort_order: number;
+  hidden: boolean;
+  filter: Record<string, unknown>;
+  rank: Record<string, unknown>;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
 
-function readableError(text: string, fallback: string) {
-  if (!text) return fallback;
-  try {
-    const parsed = JSON.parse(text);
-    if (typeof parsed.detail === "string") return parsed.detail;
-    if (parsed.detail?.message) return parsed.detail.message;
-  } catch {
-    // Plain text response.
-  }
-  return text;
-}
+export type ItemEventType =
+  | "open"
+  | "read"
+  | "unread"
+  | "star"
+  | "unstar"
+  | "hide"
+  | "unhide"
+  | "more_like_this"
+  | "less_like_this"
+  | "dismiss";
 
-export const api = {
-  getItems: (query: URLSearchParams) => request<{ items: Item[]; total: number }>(`/api/items?${query.toString()}`),
-  getItem: (id: string) => request<Item>(`/api/items/${id}`),
-  getSources: () => request<Source[]>("/api/source-definitions"),
-  getSubscriptions: () => request<Array<{ source_id: string; subscribed: boolean }>>("/api/subscriptions"),
-  subscribeSource: (id: string) => request<{ source_id: string; subscribed: boolean }>(`/api/subscriptions/${id}`, { method: "POST" }),
-  unsubscribeSource: (id: string) => request<{ source_id: string; subscribed: boolean }>(`/api/subscriptions/${id}`, { method: "DELETE" }),
-  patchSource: (id: string, body: Partial<Source>) => request<Source>(`/api/sources/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  patchSourceDefinition: (id: string, body: SourceDefinitionPatchInput) => request<Source>(`/api/source-definitions/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-  createSource: (body: SourceDefinitionInput) => request<Source>("/api/source-definitions", { method: "POST", body: JSON.stringify(body) }),
-  fetchSource: (id: string) => request<{ job_id: number; status: string }>(`/api/sources/${id}/fetch`, { method: "POST" }),
-  previewSource: (body: Record<string, unknown>) => request<Record<string, unknown>>("/api/sources/preview", { method: "POST", body: JSON.stringify(body) }),
-  markItem: (id: string, action: "read" | "star") => request<Item>(`/api/items/${id}/${action}`, { method: "POST", body: JSON.stringify({}) }),
-  resummarize: (id: string) => request<Item>(`/api/items/${id}/resummarize`, { method: "POST" }),
-  health: () => request<Health>("/api/health"),
-  settings: () => request<Record<string, unknown>>("/api/settings"),
-  patchSettings: (body: Record<string, unknown>) => request<Record<string, unknown>>("/api/settings", { method: "PATCH", body: JSON.stringify(body) }),
-  testAiProvider: (body: Record<string, unknown>) => request<AiProviderTestResult>("/api/settings/test-ai", { method: "POST", body: JSON.stringify(body) }),
-  importSources: async (text: string) => {
-    const res = await fetch(`${apiBase()}/api/sources/import`, {
-      method: "POST",
-      headers: { "Content-Type": "text/yaml" },
-      body: text,
-    });
-    if (!res.ok) throw new Error(readableError(await res.text(), res.statusText));
-    return res.json() as Promise<{ imported: number; summary_queued?: number }>;
-  },
-  exportSources: async () => {
-    const res = await fetch(`${apiBase()}/api/sources/export`);
-    if (!res.ok) throw new Error(readableError(await res.text(), res.statusText));
-    return res.text();
-  },
+export type RecommendationProfile = {
+  profile_id: string;
+  interests: string[];
+  excluded_terms: string[];
+  source_ids: string[];
+  tags: string[];
+  entities: string[];
+  platforms: string[];
+  content_types: string[];
+  trend_providers: string[];
+  weights: Record<string, number>;
+  implicit: Record<string, Record<string, number>>;
+  updated_at?: string | null;
 };
