@@ -56,15 +56,22 @@ function FeedView() {
   const activePresetFilter = useMemo(() => activePreset?.filter || {}, [activePreset]);
   const searchQuery = searchParams.has("q") ? searchParams.get("q") || "" : String(activePresetFilter.q || "");
   const explicitSourceKey = searchParams.getAll("source_id").join("\u0000");
+  const explicitGroupKey = searchParams.getAll("source_group").join("\u0000");
   const sourceParams = useMemo(() => {
     const explicitSourceParams = explicitSourceKey ? explicitSourceKey.split("\u0000") : [];
     if (explicitSourceParams.length) return explicitSourceParams;
+    if (searchParams.has("source_group")) {
+      const explicitGroups = explicitGroupKey ? explicitGroupKey.split("\u0000").filter(Boolean) : [];
+      if (!explicitGroups.length) return [];
+      const groupSet = new Set(explicitGroups);
+      return sources.filter((source) => groupSet.has(sourceGroupName(source))).map((source) => source.id);
+    }
     const presetSourceIds = stringList(activePresetFilter.source_ids || activePresetFilter.source_id);
     if (presetSourceIds.length) return presetSourceIds;
     const presetGroups = new Set(stringList(activePresetFilter.groups || activePresetFilter.source_group));
     if (presetGroups.size) return sources.filter((source) => presetGroups.has(sourceGroupName(source))).map((source) => source.id);
     return [];
-  }, [activePresetFilter, explicitSourceKey, sources]);
+  }, [activePresetFilter, explicitGroupKey, explicitSourceKey, searchParams, sources]);
   const currentSince = searchParams.has("since") ? searchParams.get("since") || "" : String(activePresetFilter.since || "");
   const currentPriorityTier = searchParams.has("priority_tier")
     ? searchParams.get("priority_tier") || ""

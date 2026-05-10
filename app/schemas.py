@@ -147,7 +147,7 @@ class SourceDefinitionPatch(BaseModel):
 class PreviewRequest(BaseModel):
     url: str | None = None
     route: str | None = None
-    adapter: str = "feed"
+    adapter: Literal["feed", "rsshub", "html_index", "page_index"] = "feed"
     content_type: Literal["paper", "blog", "post"] = "blog"
     attempt: FetchAttemptIn | None = None
     source: SourceDefinitionIn | None = None

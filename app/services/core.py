@@ -69,8 +69,15 @@ class IngestResult:
     work_intents: list[WorkIntent]
 
 
-def effective_priority(source: Source) -> int:
-    subscription = getattr(source, "subscription", None)
+def _profile_subscription(source: Source, profile_id: str = RECOMMENDATION_PROFILE_ID) -> SourceSubscription | None:
+    for subscription in getattr(source, "subscriptions", []) or []:
+        if subscription.profile_id == profile_id:
+            return subscription
+    return None
+
+
+def effective_priority(source: Source, profile_id: str = RECOMMENDATION_PROFILE_ID) -> int:
+    subscription = _profile_subscription(source, profile_id)
     override = subscription.priority_override if subscription else None
     return int(override if override is not None else source.priority)
 
@@ -239,7 +246,7 @@ def _unique_preset_id(db: Session, seed: str) -> str:
 def source_definition_to_out(source: Source, latest_run: SourceRun | None = None, stats: dict[str, Any] | None = None) -> SourceDefinitionOut:
     stats = stats or {}
     definition = definition_from_source(source)
-    subscription = source.subscription
+    subscription = _profile_subscription(source)
     runtime = source.runtime
     subscribed = bool(subscription and subscription.subscribed)
     display_priority = effective_priority(source)
@@ -782,7 +789,7 @@ def list_source_definitions(db: Session) -> list[SourceDefinitionOut]:
     sources = (
         db.execute(
             select(Source)
-            .options(selectinload(Source.attempts), selectinload(Source.subscription), selectinload(Source.runtime))
+            .options(selectinload(Source.attempts), selectinload(Source.subscriptions), selectinload(Source.runtime))
             .order_by(Source.group, Source.priority, Source.name)
         )
         .scalars()
@@ -806,6 +813,7 @@ def patch_source_definition(db: Session, source: Source, patch: SourceDefinition
     current_definition = definition_from_source(source)
     updated_definition = apply_source_definition_patch(current_definition, patch)
     upsert_source_definition(db, updated_definition, catalog_file="db", builtin=False)
+    _expire_recommendation_scores(db, profile_id=RECOMMENDATION_PROFILE_ID)
     db.commit()
     db.refresh(source)
     return source_definition_to_out(source)
@@ -1099,7 +1107,7 @@ def query_items(
         )
     priority_ranges = _priority_ranges(_normalize_list(priority_tier), priority_min, priority_max)
     if priority_ranges:
-        filters.append(_item_has_priority(priority_ranges))
+        filters.append(_item_has_priority(priority_ranges, subscribed_only=not include_unsubscribed))
     if summary_status:
         filters.append(Item.summary_status == summary_status)
     if read is not None:
@@ -1123,7 +1131,7 @@ def query_items(
                 and_(Item.published_at.is_(None), Item.created_at >= recent_cutoff),
                 and_(
                     _item_state_filter("read", False),
-                    _item_has_priority([(0, 74)]),
+                    _item_has_priority([(0, 74)], subscribed_only=not include_unsubscribed),
                     or_(Item.published_at >= extended_cutoff, and_(Item.published_at.is_(None), Item.created_at >= extended_cutoff)),
                 ),
             )
@@ -1196,7 +1204,12 @@ def _item_state_filter(field: str, expected: bool, profile_id: str = RECOMMENDAT
     return exists if expected else ~exists
 
 
-def _item_has_priority(ranges: list[tuple[int, int | None]]) -> Any:
+def _item_has_priority(
+    ranges: list[tuple[int, int | None]],
+    profile_id: str = RECOMMENDATION_PROFILE_ID,
+    *,
+    subscribed_only: bool = True,
+) -> Any:
     priority_value = func.coalesce(SourceSubscription.priority_override, Source.priority)
     range_filters = []
     for minimum, maximum in ranges:
@@ -1204,14 +1217,17 @@ def _item_has_priority(ranges: list[tuple[int, int | None]]) -> Any:
         if maximum is not None:
             criteria.append(priority_value <= maximum)
         range_filters.append(and_(*criteria))
+    conditions = [ItemSource.item_id == Item.id, or_(*range_filters)]
+    if subscribed_only:
+        conditions.append(SourceSubscription.subscribed.is_(True))
     return (
         select(ItemSource.id)
         .join(Source, Source.id == ItemSource.source_id)
         .outerjoin(
             SourceSubscription,
-            and_(SourceSubscription.source_id == Source.id, SourceSubscription.profile_id == RECOMMENDATION_PROFILE_ID),
+            and_(SourceSubscription.source_id == Source.id, SourceSubscription.profile_id == profile_id),
         )
-        .where(ItemSource.item_id == Item.id, or_(*range_filters))
+        .where(*conditions)
         .exists()
     )
 
@@ -1266,16 +1282,17 @@ def recommendation_for_item(
     profile: dict[str, dict[str, float]] | None = None,
     *,
     mode: str = "recommended",
+    profile_id: str = RECOMMENDATION_PROFILE_ID,
 ) -> tuple[float, list[str], dict[str, float]]:
     profile = profile or {}
     reasons: list[str] = []
-    source_rows = _item_source_priority_rows(db, item)
+    source_rows = _item_source_priority_rows(db, item, profile_id=profile_id)
     source_score, source_reasons = _source_importance_score(source_rows)
     personal_score, personal_reasons = _personal_match_score(item, source_rows, profile)
     recency_score, recency_reasons = _recency_score(item)
     quality_score, quality_reasons = _quality_score(item)
     trend_score, trend_reasons = _trend_breakthrough_score(db, item, profile) if mode == "for_you" else (0.0, [])
-    penalty_score, penalty_reasons = _interaction_penalty(db, item)
+    penalty_score, penalty_reasons = _interaction_penalty(db, item, profile_id=profile_id)
     components = {
         "personal_match": round(personal_score, 3),
         "trend_breakthrough": round(trend_score, 3),
@@ -1306,15 +1323,24 @@ def _weighted_recommendation_total(components: dict[str, float], profile: dict[s
     return total
 
 
-def _item_source_priority_rows(db: Session, item: Item) -> list[dict[str, Any]]:
+def _item_source_priority_rows(
+    db: Session,
+    item: Item,
+    profile_id: str = RECOMMENDATION_PROFILE_ID,
+    *,
+    subscribed_only: bool = True,
+) -> list[dict[str, Any]]:
+    conditions = [ItemSource.item_id == item.id]
+    if subscribed_only:
+        conditions.append(SourceSubscription.subscribed.is_(True))
     rows = db.execute(
         select(ItemSource, Source, SourceSubscription)
         .join(Source, Source.id == ItemSource.source_id)
         .outerjoin(
             SourceSubscription,
-            and_(SourceSubscription.source_id == Source.id, SourceSubscription.profile_id == RECOMMENDATION_PROFILE_ID),
+            and_(SourceSubscription.source_id == Source.id, SourceSubscription.profile_id == profile_id),
         )
-        .where(ItemSource.item_id == item.id)
+        .where(*conditions)
     ).all()
     return [
         {
@@ -1617,10 +1643,10 @@ def _trend_breakthrough_score(db: Session, item: Item, profile: dict[str, dict[s
     return min(score, 25.0), reasons[:3]
 
 
-def _interaction_penalty(db: Session, item: Item) -> tuple[float, list[str]]:
+def _interaction_penalty(db: Session, item: Item, profile_id: str = RECOMMENDATION_PROFILE_ID) -> tuple[float, list[str]]:
     reasons = []
     penalty = 0.0
-    state = item_state_flags(db, item)
+    state = item_state_flags(db, item, profile_id=profile_id)
     if state["hidden"]:
         return -1000.0, ["hidden"]
     if state["read"]:
@@ -1630,7 +1656,7 @@ def _interaction_penalty(db: Session, item: Item) -> tuple[float, list[str]]:
         db.execute(
             select(UserItemEvent.event_type, func.count(UserItemEvent.id))
             .where(
-                UserItemEvent.profile_id == RECOMMENDATION_PROFILE_ID,
+                UserItemEvent.profile_id == profile_id,
                 UserItemEvent.item_id == item.id,
                 UserItemEvent.event_type.in_(["open", "dismiss", "less_like_this"]),
             )
@@ -1741,6 +1767,7 @@ def _cached_recommendation_scores(db: Session, item_ids: list[str], profile_id: 
             ItemRecommendationScore.profile_id == profile_id,
             ItemRecommendationScore.rank_mode == "for_you",
             ItemRecommendationScore.expires_at >= now,
+            ItemRecommendationScore.model_version == RECOMMENDATION_MODEL_VERSION,
         )
     ).scalars().all()
     return {
@@ -1758,12 +1785,12 @@ def score_recommendations(db: Session, profile_id: str = RECOMMENDATION_PROFILE_
     db.add(run)
     db.commit()
     try:
-        items = _recommendation_candidates(db, limit=limit)
+        items = _recommendation_candidates(db, limit=limit, profile_id=profile_id)
         profile = recommendation_profile_weights(db, profile_id)
         _attach_recommendation_runtime_caches(db, profile)
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=RECOMMENDATION_SCORE_TTL_MINUTES)
         for item in items:
-            score, reasons, components = recommendation_for_item(db, item, profile, mode="for_you")
+            score, reasons, components = recommendation_for_item(db, item, profile, mode="for_you", profile_id=profile_id)
             row = db.execute(
                 select(ItemRecommendationScore).where(
                     ItemRecommendationScore.item_id == item.id,
@@ -1834,7 +1861,7 @@ def embed_item(db: Session, item_id: str) -> bool:
 
 
 def recommendation_embedding_text(db: Session, item: Item) -> str:
-    source_rows = _item_source_priority_rows(db, item)
+    source_rows = _item_source_priority_rows(db, item, subscribed_only=False)
     source_text = " ".join(f"{row['source_name']} {row['platform']}" for row in source_rows)
     return "\n".join(
         [
@@ -1862,8 +1889,8 @@ def _hash_embedding(text: str, dimensions: int = 64) -> list[float]:
     return [round(value / norm, 6) for value in vector]
 
 
-def refresh_external_trends(db: Session) -> int:
-    run = RecommendationRun(job_type="refresh_external_trends", profile_id=RECOMMENDATION_PROFILE_ID, status="running", model_version=RECOMMENDATION_MODEL_VERSION)
+def refresh_external_trends(db: Session, profile_id: str = RECOMMENDATION_PROFILE_ID) -> int:
+    run = RecommendationRun(job_type="refresh_external_trends", profile_id=profile_id, status="running", model_version=RECOMMENDATION_MODEL_VERSION)
     db.add(run)
     db.commit()
     imported = 0
@@ -1877,10 +1904,8 @@ def refresh_external_trends(db: Session) -> int:
     run.item_count = imported
     run.finished_at = utcnow()
     if imported:
-        _expire_recommendation_scores(db, profile_id=RECOMMENDATION_PROFILE_ID)
+        _expire_recommendation_scores(db, profile_id=profile_id)
     db.commit()
-    if errors and imported == 0:
-        raise RuntimeError(run.error_message or "External trend refresh failed")
     return imported
 
 
@@ -1950,24 +1975,24 @@ def upsert_external_trend_signal(
     return row
 
 
-def _recommendation_candidates(db: Session, limit: int) -> list[Item]:
-    subscribed_ids = subscribed_source_ids(db)
+def _recommendation_candidates(db: Session, limit: int, profile_id: str = RECOMMENDATION_PROFILE_ID) -> list[Item]:
+    subscribed_ids = subscribed_source_ids(db, profile_id=profile_id)
     if not subscribed_ids:
         return []
     now = datetime.now(timezone.utc)
     recent_cutoff = now - timedelta(days=30)
     extended_cutoff = now - timedelta(days=90)
-    important = _item_has_priority([(0, 74)])
+    important = _item_has_priority([(0, 74)], profile_id=profile_id)
     stmt = (
         select(Item)
         .where(
-            _item_state_filter("hidden", False),
+            _item_state_filter("hidden", False, profile_id=profile_id),
             _item_has_source(subscribed_ids),
             or_(
                 Item.published_at >= recent_cutoff,
                 and_(Item.published_at.is_(None), Item.created_at >= recent_cutoff),
                 and_(
-                    _item_state_filter("read", False),
+                    _item_state_filter("read", False, profile_id=profile_id),
                     important,
                     or_(Item.published_at >= extended_cutoff, and_(Item.published_at.is_(None), Item.created_at >= extended_cutoff)),
                 ),
@@ -2090,12 +2115,13 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
         existing_source_tags = _existing_item_source_tags(db, item, source)
         item_source = upsert_item_source(db, item, source, entry.url, item_canonical, provisional_tags)
         db.flush()
+        detail_url = entry.url or item_source.url or item.url
         should_fetch_detail = mode == "detail_only" or (
             mode == "feed_then_detail"
-            and item.url
+            and detail_url
             and _feed_text_needs_detail(raw_text, entry_summary, min_feed_fulltext_chars)
         )
-        if should_fetch_detail and item.url:
+        if should_fetch_detail and detail_url:
             existing_fulltext = db.execute(
                 select(Fulltext)
                 .where(Fulltext.item_id == item.id, Fulltext.extractor == "generic_article", Fulltext.status == "succeeded")
@@ -2108,7 +2134,7 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
             elif not fulltext_limit or fulltext_attempts < fulltext_limit:
                 fulltext_attempts += 1
                 item_id = item.id
-                item_url = item.url
+                item_url = detail_url
                 db.commit()
                 text, error = await extract_generic_article(item_url)
                 item = db.get(Item, item_id)

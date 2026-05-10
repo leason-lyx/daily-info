@@ -262,8 +262,9 @@ async def run_job(db: Session, job: Job, settings: Settings) -> None:
         elif job.type == "embed_item":
             embed_item(db, payload["item_id"])
         elif job.type == "refresh_external_trends":
-            refresh_external_trends(db)
-            enqueue_build_recommendation_profile(db, payload["profile_id"])
+            profile_id = payload["profile_id"]
+            refresh_external_trends(db, profile_id)
+            enqueue_build_recommendation_profile(db, profile_id)
         elif job.type == "build_recommendation_profile":
             profile_id = payload["profile_id"]
             build_recommendation_profile(db, profile_id)
@@ -408,8 +409,9 @@ def schedule_recommendation_jobs(db: Session, interval_seconds: int = 900) -> in
         return 0
     job = enqueue_refresh_trends(db, DEFAULT_PROFILE_ID)
     queued = 1 if getattr(job, "_queue_created", False) else 0
-    set_setting_value(db, "recommendation.last_scheduled_at", now.isoformat())
-    db.commit()
+    if queued:
+        set_setting_value(db, "recommendation.last_scheduled_at", now.isoformat())
+        db.commit()
     return queued
 
 

@@ -57,7 +57,8 @@ Daily Info 从环境变量读取运行时配置，部分可在 UI 中修改的�
 | 变量 | 说明 |
 | --- | --- |
 | `DATABASE_URL` | 数据库连接串。Docker 默认是 `sqlite:////data/daily-info.db`。 |
-| `NEXT_PUBLIC_API_BASE_URL` | 浏览器访问后端 API 的地址，默认 `http://localhost:8000`；如果页面不是从 localhost 打开，前端会把 localhost API 地址自动改成当前 hostname 的 `:8000`，适配 Tailscale Serve。 |
+| `NEXT_PUBLIC_API_BASE_URL` | 浏览器访问后端 API 的地址，默认 `http://localhost:8000`；如果页面不是从 localhost 打开，前端会把 localhost API 地址自动改成当前 hostname 的 `:8000`，适配 Tailscale Serve。Docker 中该值会在构建 web 镜像时写入 bundle，修改后需要重建。 |
+| `CORS_ALLOW_ORIGINS` | 允许调用 API 的浏览器 origin，逗号分隔。localhost-only 部署可用 `*`，此时后端不会启用 credentialed CORS。 |
 | `RSSHUB_PUBLIC_INSTANCES` | 逗号分隔的公共 RSSHub 实例列表。 |
 | `RSSHUB_SELF_HOSTED_BASE_URL` | 可选的自托管 RSSHub 实例。 |
 | `LLM_PROVIDER_TYPE` | `none`、`openai_compatible` 或 `codex_cli`。 |

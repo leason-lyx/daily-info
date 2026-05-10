@@ -76,7 +76,7 @@ class Source(Base):
     )
     items: Mapped[list["Item"]] = relationship(back_populates="source")
     runs: Mapped[list["SourceRun"]] = relationship(back_populates="source")
-    subscription: Mapped["SourceSubscription"] = relationship(back_populates="source", cascade="all, delete-orphan", uselist=False)
+    subscriptions: Mapped[list["SourceSubscription"]] = relationship(back_populates="source", cascade="all, delete-orphan")
     runtime: Mapped["SourceRuntime"] = relationship(back_populates="source", cascade="all, delete-orphan")
 
 
@@ -91,7 +91,7 @@ class SourceSubscription(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
-    source: Mapped[Source] = relationship(back_populates="subscription")
+    source: Mapped[Source] = relationship(back_populates="subscriptions")
 
 
 class FeedPreset(Base):

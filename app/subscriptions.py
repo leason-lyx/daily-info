@@ -35,6 +35,7 @@ def subscribe_source(db: Session, source_id: str, profile_id: str = DEFAULT_PROF
         db.add(subscription)
     else:
         subscription.subscribed = True
+    _expire_profile_recommendations(db, profile_id)
     db.commit()
     db.refresh(subscription)
     return subscription
@@ -49,6 +50,7 @@ def unsubscribe_source(db: Session, source_id: str, profile_id: str = DEFAULT_PR
         db.add(subscription)
     else:
         subscription.subscribed = False
+    _expire_profile_recommendations(db, profile_id)
     db.commit()
     db.refresh(subscription)
     return subscription
@@ -79,6 +81,13 @@ def update_subscription_settings(
         db.add(subscription)
     subscription.settings_override = dumps(settings_override)
     subscription.priority_override = priority_override
+    _expire_profile_recommendations(db, profile_id)
     db.commit()
     db.refresh(subscription)
     return subscription
+
+
+def _expire_profile_recommendations(db: Session, profile_id: str) -> None:
+    from app.services.core import _expire_recommendation_scores
+
+    _expire_recommendation_scores(db, profile_id=profile_id)

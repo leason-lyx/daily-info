@@ -3,12 +3,14 @@ import shutil
 from typing import Annotated
 from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.adapters import AdapterError, preview_source
+from app.config import get_settings
 from app.application.items import ItemNotFound, set_item_flag
 from app.db import get_db, init_db
 from app.job_queue import enqueue_fetch_source, enqueue_summarize_item
@@ -77,10 +79,12 @@ from app.utils import dumps, loads
 
 
 app = FastAPI(title="Daily Info API", version="0.1.0")
+api_settings = get_settings()
+cors_origins = api_settings.cors_origins or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    allow_credentials="*" not in cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -251,7 +255,7 @@ def create_source_catalog_entry(payload: SourceDefinitionIn, db: Db):
 
 @app.patch("/api/source-definitions/{source_id}", response_model=SourceDefinitionOut)
 def update_source_catalog_entry(source_id: str, payload: SourceDefinitionPatch, db: Db):
-    source = db.execute(select(Source).options(selectinload(Source.attempts), selectinload(Source.subscription), selectinload(Source.runtime)).where(Source.id == source_id)).scalar_one_or_none()
+    source = db.execute(select(Source).options(selectinload(Source.attempts), selectinload(Source.subscriptions), selectinload(Source.runtime)).where(Source.id == source_id)).scalar_one_or_none()
     if not source:
         raise HTTPException(status_code=404, detail="Source definition not found")
     try:
@@ -317,6 +321,8 @@ async def source_preview(payload: PreviewRequest, db: Db):
         result = await preview_source(url, route, adapter, load_runtime_settings(db), timeout_seconds=timeout_seconds)
     except AdapterError as exc:
         raise HTTPException(status_code=422, detail={"code": exc.code, "message": exc.message}) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=503, detail={"code": "preview_fetch_failed", "message": str(exc)}) from exc
     entries = [
         {
             "title": entry.title,
@@ -413,7 +419,7 @@ def _job_health(db: Session) -> dict:
 @app.get("/api/health")
 def health(db: Db):
     runs = db.execute(select(SourceRun).order_by(SourceRun.id.desc()).limit(50)).scalars().all()
-    sources = db.execute(select(Source).options(selectinload(Source.subscription))).scalars().all()
+    sources = db.execute(select(Source).options(selectinload(Source.subscriptions))).scalars().all()
     items_total = db.execute(select(func.count(Item.id))).scalar_one()
     items_24h = db.execute(select(func.count(Item.id)).where(Item.created_at >= datetime.now(timezone.utc) - timedelta(days=1))).scalar_one()
     summary_total = db.execute(select(func.count(Summary.id))).scalar_one()
@@ -430,7 +436,8 @@ def health(db: Db):
     source_health = []
     degraded_sources = []
     for source in sources:
-        subscribed = bool(source.subscription and source.subscription.subscribed)
+        subscription = get_subscription(db, source.id)
+        subscribed = bool(subscription and subscription.subscribed)
         latest = latest_by_source.get(source.id)
         recent_source_runs = [run for run in runs if run.source_id == source.id]
         consecutive_failures = 0

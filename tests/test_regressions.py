@@ -597,6 +597,54 @@ def test_persist_entries_deduplicates_tracking_urls_and_preserves_user_state(tmp
     assert result.stdout.strip() == "ok"
 
 
+def test_persist_entries_fetches_detail_from_current_source_url(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+
+        from app.adapters import RawEntryData
+        from app.config import get_settings
+        from app.db import SessionLocal, init_db
+        from app.models import Fulltext, Source
+        import app.services.core as core
+
+        seen_urls = []
+
+        async def fake_extract(url, timeout=20):
+            seen_urls.append(url)
+            return f"detail from {url}", ""
+
+        init_db()
+        settings = get_settings()
+        with SessionLocal() as db:
+            first_source = Source(id="first", name="First", content_type="blog", platform="web")
+            detail_source = Source(
+                id="detail",
+                name="Detail",
+                content_type="blog",
+                platform="web",
+                fulltext='{"mode":"detail_only","max_detail_pages_per_run":5}',
+            )
+            db.add_all([first_source, detail_source])
+            db.commit()
+
+            first = RawEntryData(title="Shared Launch", url="https://example.com/launch?utm_source=first", summary="short", content="short")
+            second = RawEntryData(title="Shared Launch", url="https://example.com/launch?utm_source=detail", summary="short", content="short")
+            asyncio.run(core.persist_entries(db, first_source, [first], settings))
+            core.extract_generic_article = fake_extract
+            result = asyncio.run(core.persist_entries(db, detail_source, [second], settings))
+
+            assert result.item_count == 0
+            assert seen_urls == ["https://example.com/launch?utm_source=detail"]
+            fulltext = db.query(Fulltext).filter(Fulltext.extractor == "generic_article").one()
+            assert fulltext.text == "detail from https://example.com/launch?utm_source=detail"
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "dedupe-current-source-detail.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_persist_entries_uses_feed_tagging_mode_and_filters_noise(tmp_path: Path) -> None:
     result = run_python(
         """
@@ -1654,6 +1702,55 @@ def test_create_source_definition_writes_db_catalog_without_custom_yaml(tmp_path
     assert result.stdout.strip() == "ok"
 
 
+def test_source_definition_projection_uses_default_profile_subscription(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from fastapi.testclient import TestClient
+
+        from app.api import app
+        from app.db import SessionLocal
+        from app.models import SourceSubscription
+
+        payload = {
+            "id": "multi-profile",
+            "title": "Multi Profile",
+            "kind": "blog",
+            "platform": "custom",
+            "homepage": "https://example.com",
+            "language": "en",
+            "tags": ["custom"],
+            "group": "Custom",
+            "priority": 100,
+            "fetch": {
+                "strategy": "first_success",
+                "interval_seconds": 3600,
+                "attempts": [{"adapter": "feed", "url": "https://example.com/feed.xml"}],
+            },
+            "fulltext": {"mode": "feed_only"},
+            "summary": {"auto": False, "window_days": 7},
+            "auth": {"mode": "none"},
+        }
+
+        with TestClient(app) as client:
+            response = client.post("/api/source-definitions", json=payload)
+            assert response.status_code == 200, response.text
+
+        with SessionLocal() as db:
+            db.add(SourceSubscription(profile_id="other", source_id="multi-profile", subscribed=True, priority_override=0))
+            db.commit()
+
+        with TestClient(app) as client:
+            rows = client.get("/api/source-definitions").json()
+            row = next(source for source in rows if source["id"] == "multi-profile")
+            assert row["subscribed"] is True
+            assert row["effective_priority"] == 100
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "source-definition-default-profile.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_feed_defaults_to_subscribed_sources(tmp_path: Path) -> None:
     result = run_python(
         """
@@ -1726,6 +1823,7 @@ def test_feed_presets_priority_filters_and_events(tmp_path: Path) -> None:
                 Source(id="core", name="Core Lab", content_type="blog", platform="core", group="Model Labs", priority=10, default_tags=dumps(["models"])),
                 Source(id="override-low", name="Override Low", content_type="blog", platform="media", group="Tech Media", priority=5, default_tags=dumps(["media"])),
                 Source(id="paper", name="Paper Source", content_type="paper", platform="arxiv", group="Papers", priority=40, default_tags=dumps(["paper"])),
+                Source(id="unsubscribed-core", name="Unsubscribed Core", content_type="blog", platform="core", group="Model Labs", priority=0),
             ])
             db.add_all([
                 SourceSubscription(source_id="core", subscribed=True),
@@ -1743,6 +1841,7 @@ def test_feed_presets_priority_filters_and_events(tmp_path: Path) -> None:
                 ItemSource(item_id=low_item.id, source_id="override-low", source_name="Override Low", url=low_item.url, canonical_url=low_item.canonical_url),
                 ItemSource(item_id=shared_item.id, source_id="override-low", source_name="Override Low", url=shared_item.url, canonical_url=shared_item.canonical_url),
                 ItemSource(item_id=shared_item.id, source_id="paper", source_name="Paper Source", url=shared_item.url, canonical_url=shared_item.canonical_url),
+                ItemSource(item_id=shared_item.id, source_id="unsubscribed-core", source_name="Unsubscribed Core", url=shared_item.url, canonical_url=shared_item.canonical_url),
             ])
             custom = create_feed_preset(db, {"name": "Paper View", "filter": {"groups": ["Papers"], "since": "7d"}, "rank": {"mode": "latest"}})
             db.commit()
@@ -1750,6 +1849,8 @@ def test_feed_presets_priority_filters_and_events(tmp_path: Path) -> None:
             items, total = query_items(db, priority_tier=["p0"])
             assert total == 1
             assert items[0].id == core_item.id
+            items, total = query_items(db, priority_tier=["p0"], include_unsubscribed=True)
+            assert total == 2
 
             items, total = query_items(db, priority_tier=["p1"])
             assert total == 1
@@ -2015,8 +2116,8 @@ def test_recommendation_scheduler_queues_pipeline_once(tmp_path: Path) -> None:
         init_db()
         calls = []
 
-        def fake_refresh(db):
-            calls.append("refresh")
+        def fake_refresh(db, profile_id="default"):
+            calls.append(f"refresh:{profile_id}")
             return 0
 
         def fake_build(db, profile_id="default"):
@@ -2050,7 +2151,7 @@ def test_recommendation_scheduler_queues_pipeline_once(tmp_path: Path) -> None:
 
             asyncio.run(jobs.run_job(db, score, get_settings()))
             assert score.status == JobStatus.succeeded.value
-            assert calls == ["refresh", "build:default", "score:default"]
+            assert calls == ["refresh:default", "build:default", "score:default"]
             assert {job.attempts for job in db.execute(select(Job)).scalars()} == {1}
         print("ok")
         """,
@@ -2120,7 +2221,7 @@ def test_page_index_adapter_parses_reader_fallback_dates(tmp_path: Path) -> None
                 request = httpx.Request("GET", url)
                 if url == "https://openai.com/research/":
                     return httpx.Response(403, text="blocked", request=request)
-                if url.startswith("https://r.jina.ai/"):
+                if url == "https://r.jina.ai/https://openai.com/research/":
                     return httpx.Response(200, text=markdown, request=request)
                 raise AssertionError(url)
 

@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/daily-info.db"
     public_app_url: str = "http://localhost:3000"
     api_base_url: str = "http://localhost:8000"
+    cors_allow_origins: str = "*"
 
     rsshub_public_instances: str = (
         "https://rsshub.rssforever.com,"
@@ -40,6 +41,10 @@ class Settings(BaseSettings):
         if self.rsshub_self_hosted_base_url:
             configured.insert(0, self.rsshub_self_hosted_base_url.rstrip("/"))
         return configured
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [origin.strip().rstrip("/") for origin in self.cors_allow_origins.split(",") if origin.strip()]
 
     @property
     def llm_configured(self) -> bool:

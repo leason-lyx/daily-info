@@ -28,7 +28,8 @@ sudo tailscale serve --https=8000 http://127.0.0.1:8000
 | `DATABASE_URL` | 数据库连接串。Docker 默认是 `sqlite:////data/daily-info.db`。 |
 | `PUBLIC_APP_URL` | 应用公开访问地址。 |
 | `API_BASE_URL` | 后端内部 API 地址。 |
-| `NEXT_PUBLIC_API_BASE_URL` | 浏览器访问 API 的地址，默认 `http://localhost:8000`；非 localhost 页面会把 localhost API 地址自动改写为当前 hostname 的 `:8000`，用于 Tailscale Serve。 |
+| `NEXT_PUBLIC_API_BASE_URL` | 浏览器访问 API 的地址，默认 `http://localhost:8000`；非 localhost 页面会把 localhost API 地址自动改写为当前 hostname 的 `:8000`，用于 Tailscale Serve。Docker 中该值会在构建 web 镜像时写入 bundle，修改后需要重建 web 服务。 |
+| `CORS_ALLOW_ORIGINS` | 允许调用 API 的浏览器 origin，逗号分隔。localhost-only 部署可使用 `*`，此时后端不会启用 credentialed CORS。 |
 | `RSSHUB_PUBLIC_INSTANCES` | 逗号分隔的公共 RSSHub 实例列表。 |
 | `RSSHUB_SELF_HOSTED_BASE_URL` | 可选自托管 RSSHub 地址。 |
 | `LLM_PROVIDER_TYPE` | `none`、`openai_compatible` 或 `codex_cli`。 |

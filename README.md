@@ -57,7 +57,8 @@ Common settings:
 | Variable | Description |
 | --- | --- |
 | `DATABASE_URL` | Database connection string. Docker defaults to `sqlite:////data/daily-info.db`. |
-| `NEXT_PUBLIC_API_BASE_URL` | API URL used by the browser. Defaults to `http://localhost:8000`; when a localhost value is used from a non-localhost page, the frontend rewrites it to the current hostname on port `8000` for Tailscale Serve access. |
+| `NEXT_PUBLIC_API_BASE_URL` | API URL used by the browser. Defaults to `http://localhost:8000`; when a localhost value is used from a non-localhost page, the frontend rewrites it to the current hostname on port `8000` for Tailscale Serve access. In Docker this value is baked into the web image, so rebuild after changing it. |
+| `CORS_ALLOW_ORIGINS` | Comma-separated browser origins allowed to call the API. `*` is accepted for localhost-only deployments and disables credentialed CORS. |
 | `RSSHUB_PUBLIC_INSTANCES` | Comma-separated public RSSHub instances used for RSSHub routes. |
 | `RSSHUB_SELF_HOSTED_BASE_URL` | Optional private RSSHub instance. |
 | `LLM_PROVIDER_TYPE` | `none`, `openai_compatible`, or `codex_cli`. |

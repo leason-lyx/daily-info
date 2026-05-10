@@ -29,8 +29,14 @@ services:
       ALL_PROXY: ${DOCKER_ALL_PROXY:-}
 
   web:
+    build:
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://127.0.0.1:8000}
     environment:
       NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://127.0.0.1:8000}
+      HTTP_PROXY: ${DOCKER_HTTP_PROXY:-}
+      HTTPS_PROXY: ${DOCKER_HTTPS_PROXY:-}
+      ALL_PROXY: ${DOCKER_ALL_PROXY:-}
     ports:
       - "127.0.0.1:3000:3000"
 
