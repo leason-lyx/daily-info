@@ -1,5 +1,12 @@
 schema_version: 1
 presets:
+  - id: for-you
+    name: For You
+    description: 个性化与热门信号混合推荐
+    sort_order: -10
+    filter: {}
+    rank:
+      mode: for_you
   - id: all
     name: 全部
     description: 全部已订阅源

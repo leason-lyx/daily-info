@@ -23,6 +23,8 @@ from app.schemas import (
     LLMProviderIn,
     PreviewRequest,
     PreviewResponse,
+    RecommendationProfileOut,
+    RecommendationProfilePatch,
     SourceDefinitionPatch,
     SettingsOut,
     SettingsPatch,
@@ -52,11 +54,13 @@ from app.services import (
     latest_runs,
     patch_source,
     patch_feed_preset,
+    patch_recommendation_profile,
     patch_source_definition,
     query_items,
     queue_auto_summaries,
     queue_job,
     record_item_event,
+    get_recommendation_profile,
     reconcile_auto_summary_statuses,
     resolve_item_query_params,
     sync_default_source_pack,
@@ -185,6 +189,16 @@ def create_item_event(item_id: str, payload: ItemEventIn, db: Db):
         return ItemEventOut(**record_item_event(db, item_id, payload.event_type, payload.source_id, payload.metadata))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Item not found") from exc
+
+
+@app.get("/api/recommendation/profile", response_model=RecommendationProfileOut)
+def get_recommendation_profile_endpoint(db: Db):
+    return RecommendationProfileOut(**get_recommendation_profile(db))
+
+
+@app.patch("/api/recommendation/profile", response_model=RecommendationProfileOut)
+def patch_recommendation_profile_endpoint(payload: RecommendationProfilePatch, db: Db):
+    return RecommendationProfileOut(**patch_recommendation_profile(db, payload.model_dump(mode="json", exclude_unset=True)))
 
 
 @app.post("/api/items/{item_id}/resummarize")

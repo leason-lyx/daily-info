@@ -278,6 +278,7 @@ class ItemOut(BaseModel):
     summary_status: str
     recommendation_score: float | None = None
     recommendation_reasons: list[str] = Field(default_factory=list)
+    recommendation_components: dict[str, float] = Field(default_factory=dict)
     sources: list[ItemSourceOut] = Field(default_factory=list)
 
 
@@ -319,7 +320,18 @@ class FeedPresetOut(BaseModel):
 
 
 class ItemEventIn(BaseModel):
-    event_type: Literal["open", "read", "unread", "star", "unstar", "hide", "unhide"]
+    event_type: Literal[
+        "open",
+        "read",
+        "unread",
+        "star",
+        "unstar",
+        "hide",
+        "unhide",
+        "more_like_this",
+        "less_like_this",
+        "dismiss",
+    ]
     source_id: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -331,6 +343,33 @@ class ItemEventOut(BaseModel):
     source_id: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime | None = None
+
+
+class RecommendationProfilePatch(BaseModel):
+    interests: list[str] | None = None
+    excluded_terms: list[str] | None = None
+    source_ids: list[str] | None = None
+    tags: list[str] | None = None
+    entities: list[str] | None = None
+    platforms: list[str] | None = None
+    content_types: list[str] | None = None
+    trend_providers: list[str] | None = None
+    weights: dict[str, float] | None = None
+
+
+class RecommendationProfileOut(BaseModel):
+    profile_id: str = "default"
+    interests: list[str] = Field(default_factory=list)
+    excluded_terms: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
+    platforms: list[str] = Field(default_factory=list)
+    content_types: list[str] = Field(default_factory=list)
+    trend_providers: list[str] = Field(default_factory=list)
+    weights: dict[str, float] = Field(default_factory=dict)
+    implicit: dict[str, dict[str, float]] = Field(default_factory=dict)
+    updated_at: datetime | None = None
 
 
 class LLMProviderIn(BaseModel):

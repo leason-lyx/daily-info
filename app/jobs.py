@@ -8,8 +8,20 @@ from sqlalchemy.orm import Session, selectinload
 from app.adapters import AdapterError, run_attempt
 from app.config import Settings, get_settings
 from app.db import SessionLocal
-from app.models import Item, ItemSource, Job, JobStatus, Source, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
-from app.services import load_runtime_settings, openai_summary_provider_chain, persist_entries, queue_auto_summaries, queue_job, reconcile_auto_summary_statuses
+from app.models import Item, ItemSource, Job, JobStatus, Setting, Source, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, utcnow
+from app.services import (
+    build_recommendation_profile,
+    embed_item,
+    load_runtime_settings,
+    openai_summary_provider_chain,
+    persist_entries,
+    queue_auto_summaries,
+    queue_job,
+    reconcile_auto_summary_statuses,
+    refresh_external_trends,
+    score_recommendations,
+    set_setting_value,
+)
 from app.summary import content_hash, summarize_item, summarize_openai_compatible
 from app.utils import dumps, loads
 
@@ -169,6 +181,7 @@ async def summarize_item_job(db: Session, item_id: str, settings: Settings) -> N
             )
         )
     db.commit()
+    queue_job(db, "embed_item", {"item_id": item.id}, max_attempts=2)
 
 
 async def _summarize_item_with_openai_chain(db: Session, item: Item, settings: Settings) -> None:
@@ -209,6 +222,7 @@ async def _summarize_item_with_openai_chain(db: Session, item: Item, settings: S
             item.chinese_title = data.get("one_sentence", "")[:120]
             item.summary = data.get("one_sentence", item.summary)
             db.commit()
+            queue_job(db, "embed_item", {"item_id": item.id}, max_attempts=2)
             return
         except Exception as exc:  # noqa: BLE001
             last_error = str(exc)[-1000:]
@@ -245,6 +259,14 @@ async def run_job(db: Session, job: Job, settings: Settings) -> None:
                 raise RuntimeError(run.error_message or run.error_code)
         elif job.type == "summarize_item":
             await summarize_item_job(db, payload["item_id"], settings)
+        elif job.type == "embed_item":
+            embed_item(db, payload["item_id"])
+        elif job.type == "refresh_external_trends":
+            refresh_external_trends(db)
+        elif job.type == "build_recommendation_profile":
+            build_recommendation_profile(db, payload.get("profile_id", "default"))
+        elif job.type == "score_recommendations":
+            score_recommendations(db, payload.get("profile_id", "default"))
         else:
             raise RuntimeError(f"Unsupported job type: {job.type}")
         job.status = JobStatus.succeeded.value
@@ -333,6 +355,25 @@ def schedule_auto_summaries(db: Session, settings: Settings, limit: int = 20) ->
     return queue_auto_summaries(db, settings, limit=limit)
 
 
+def schedule_recommendation_jobs(db: Session, interval_seconds: int = 900) -> int:
+    now = datetime.now(timezone.utc)
+    row = db.get(Setting, "recommendation.last_scheduled_at")
+    latest_value = loads(row.value, None) if row else None
+    latest = _aware(datetime.fromisoformat(latest_value)) if isinstance(latest_value, str) else _aware(latest_value)
+    if latest and (now - latest).total_seconds() < interval_seconds:
+        return 0
+    queued = 0
+    queue_job(db, "refresh_external_trends", {}, max_attempts=1)
+    queued += 1
+    queue_job(db, "build_recommendation_profile", {"profile_id": "default"}, max_attempts=1)
+    queued += 1
+    queue_job(db, "score_recommendations", {"profile_id": "default"}, max_attempts=1)
+    queued += 1
+    set_setting_value(db, "recommendation.last_scheduled_at", now.isoformat())
+    db.commit()
+    return queued
+
+
 async def scheduler_loop() -> None:
     settings = get_settings()
     while True:
@@ -341,4 +382,5 @@ async def scheduler_loop() -> None:
             runtime_settings = load_runtime_settings(db)
             reconcile_auto_summary_statuses(db, runtime_settings, limit=500)
             schedule_auto_summaries(db, runtime_settings, limit=20)
+            schedule_recommendation_jobs(db)
         await asyncio.sleep(settings.scheduler_sleep_seconds)

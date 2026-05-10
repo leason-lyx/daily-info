@@ -303,6 +303,7 @@ export type Item = {
   summary_status: string;
   recommendation_score?: number | null;
   recommendation_reasons?: string[];
+  recommendation_components?: Record<string, number>;
   sources: ItemSource[];
 };
 
@@ -316,6 +317,33 @@ export type FeedPreset = {
   filter: Record<string, unknown>;
   rank: Record<string, unknown>;
   created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type ItemEventType =
+  | "open"
+  | "read"
+  | "unread"
+  | "star"
+  | "unstar"
+  | "hide"
+  | "unhide"
+  | "more_like_this"
+  | "less_like_this"
+  | "dismiss";
+
+export type RecommendationProfile = {
+  profile_id: string;
+  interests: string[];
+  excluded_terms: string[];
+  source_ids: string[];
+  tags: string[];
+  entities: string[];
+  platforms: string[];
+  content_types: string[];
+  trend_providers: string[];
+  weights: Record<string, number>;
+  implicit: Record<string, Record<string, number>>;
   updated_at?: string | null;
 };
 
@@ -363,8 +391,11 @@ export const api = {
   fetchSource: (id: string) => request<{ job_id: number; status: string }>(`/api/sources/${id}/fetch`, { method: "POST" }),
   previewSource: (body: Record<string, unknown>) => request<Record<string, unknown>>("/api/sources/preview", { method: "POST", body: JSON.stringify(body) }),
   markItem: (id: string, action: "read" | "star") => request<Item>(`/api/items/${id}/${action}`, { method: "POST", body: JSON.stringify({}) }),
-  recordItemEvent: (id: string, event_type: "open" | "read" | "unread" | "star" | "unstar" | "hide" | "unhide", metadata: Record<string, unknown> = {}) =>
+  recordItemEvent: (id: string, event_type: ItemEventType, metadata: Record<string, unknown> = {}) =>
     request<Record<string, unknown>>(`/api/items/${id}/events`, { method: "POST", body: JSON.stringify({ event_type, metadata }) }),
+  getRecommendationProfile: () => request<RecommendationProfile>("/api/recommendation/profile"),
+  patchRecommendationProfile: (body: Partial<RecommendationProfile>) =>
+    request<RecommendationProfile>("/api/recommendation/profile", { method: "PATCH", body: JSON.stringify(body) }),
   resummarize: (id: string) => request<Item>(`/api/items/${id}/resummarize`, { method: "POST" }),
   health: () => request<Health>("/api/health"),
   settings: () => request<Record<string, unknown>>("/api/settings"),

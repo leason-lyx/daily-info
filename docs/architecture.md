@@ -9,7 +9,7 @@ Daily Info 采用简单的单体后端加后台进程架构，避免把个人自
 - `web`：Next.js 前端，默认只绑定 `http://127.0.0.1:3000`。
 - `api`：FastAPI 后端，默认只绑定 `http://127.0.0.1:8000`。
 - `worker`：后台 job runner，执行抓取、全文抽取和摘要任务。
-- `scheduler`：周期性扫描订阅源并投递 fetch jobs。
+- `scheduler`：周期性扫描订阅源并投递 fetch jobs、摘要 jobs 和推荐刷新 jobs。
 
 可选服务：
 
@@ -37,6 +37,18 @@ Source Catalog
   -> Web
 ```
 
+推荐链路：
+
+```text
+Item / ItemSource / UserItemEvent
+  -> embed_item job
+  -> refresh_external_trends job
+  -> build_recommendation_profile job
+  -> score_recommendations job
+  -> ItemRecommendationScore
+  -> For You preset
+```
+
 关键规则：
 
 - `config/sources/*.yaml` 是内置 catalog 定义，不是运行时 secret 存储。
@@ -44,7 +56,9 @@ Source Catalog
 - 只有已订阅 source 会被 scheduler 抓取，并默认进入 feed。
 - Item 使用确定性 `dedupe_key` 做跨 source 去重；`item_sources` 是来源归属的事实表，source 过滤、订阅过滤、health 统计、source audit 和摘要队列都按它计算。
 - Feed 预设是独立视图层：内置预设来自 `config/feed-presets.yaml`，自定义预设保存在数据库；预设只解析成普通 feed filter，不改变订阅状态。
-- 推荐排序是 feed 排序层，基于 source 有效优先级、时效性和用户行为事件生成可解释分数，不改变去重或来源归属。
+- `For You` 推荐是 feed 排序层，优先使用 `ItemRecommendationScore` 缓存分数，缓存缺失或过期时回退到请求时可解释规则；推荐只改变排序和解释，不改变订阅、去重或来源归属。
+- 推荐画像由显式 Settings 偏好和带时间衰减的行为事件合并而成，单用户阶段使用 `profile_id="default"`，未来可扩展到多用户。
+- 外部热度信号通过 adapter 写入 `ExternalTrendSignal`；provider 失败只影响趋势分项，不阻断 feed。
 - 每个 source 可以配置 `tagging` 策略：可信 feed 使用 entry category/tag，不可信 feed 可用 AI 生成主题标签，所有路径都会过滤明显的网页布局/CSS class 噪声。
 - item 入库不等待 AI 摘要完成。
 - 抓取、全文和摘要失败都应可观察，但不应阻断历史内容浏览。
@@ -52,8 +66,8 @@ Source Catalog
 ## 后端边界
 
 - API 负责 HTTP 接口、settings、source 管理、feed 查询、health 查询和手动触发任务。
-- Worker 负责慢任务，不把长耗时工作塞进请求响应路径。
-- Scheduler 只负责投递到期任务，真正执行仍交给 worker。
+- Worker 负责慢任务，不把长耗时工作塞进请求响应路径；推荐相关的 embedding、趋势刷新、画像构建和批量打分也通过 job 执行。
+- Scheduler 只负责投递到期任务，真正执行仍交给 worker；推荐刷新默认约每 15 分钟投递一次。
 - SQLite 是默认持久层，启用 WAL；Postgres 目前是可选增强路径。
 
 ## 前端页面
@@ -62,7 +76,7 @@ Source Catalog
 - `/sources`：Source Catalog，浏览、筛选、订阅、预览和抓取 source。
 - `/sources/new`：新增 source。
 - `/health`：运行状态、source health、job 状态和 AI provider 状态。
-- `/settings`：运行设置和可选 AI provider 配置。
+- `/settings`：运行设置、推荐偏好和可选 AI provider 配置。
 
 ## AI 摘要
 

@@ -1742,7 +1742,7 @@ def test_feed_presets_priority_filters_and_events(tmp_path: Path) -> None:
         with SessionLocal() as db:
             sync_feed_presets(db)
             preset_ids = [preset["id"] for preset in list_feed_presets(db)]
-            assert preset_ids[:4] == ["all", "news", "papers", "models"]
+            assert preset_ids[:5] == ["for-you", "all", "news", "papers", "models"]
             news_preset = db.get(FeedPreset, "news")
             news_preset.sort_order = 99
             news_preset.hidden = True
@@ -1820,6 +1820,127 @@ def test_feed_presets_priority_filters_and_events(tmp_path: Path) -> None:
         print("ok")
         """,
         sqlite_url(tmp_path / "feed-presets-priority-events.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_for_you_profile_trends_feedback_and_cached_scores(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from fastapi.testclient import TestClient
+        from sqlalchemy import select
+
+        from app.api import app
+        from app.db import SessionLocal, init_db
+        from app.models import Item, ItemRecommendationScore, ItemSource, Source, SourceSubscription, UserItemEvent, UserPreference
+        from app.services import build_recommendation_profile, query_items, resolve_item_query_params, score_recommendations, sync_feed_presets, upsert_external_trend_signal
+        from app.utils import dumps, loads
+
+        init_db()
+        now = datetime.now(timezone.utc)
+        with SessionLocal() as db:
+            sync_feed_presets(db)
+            db.add_all([
+                Source(id="lab", name="Model Lab", content_type="blog", platform="openai", group="Model Labs", priority=30),
+                Source(id="media", name="Tech Media", content_type="blog", platform="media", group="Tech Media", priority=110),
+            ])
+            db.add_all([
+                SourceSubscription(source_id="lab", subscribed=True),
+                SourceSubscription(source_id="media", subscribed=True),
+            ])
+            agent = Item(
+                source_id="lab",
+                canonical_url="https://example.com/agent",
+                title="OpenAI agent breakthrough",
+                url="https://example.com/agent",
+                content_type="blog",
+                platform="openai",
+                source_name="Model Lab",
+                published_at=now - timedelta(hours=2),
+                summary="AI agents can now coordinate research workflows.",
+                raw_text="AI agents research workflows OpenAI",
+                tags=dumps(["agents", "models"]),
+                entities=dumps(["OpenAI"]),
+            )
+            gadget = Item(
+                source_id="media",
+                canonical_url="https://example.com/gadget",
+                title="Consumer gadget roundup",
+                url="https://example.com/gadget",
+                content_type="blog",
+                platform="media",
+                source_name="Tech Media",
+                published_at=now - timedelta(hours=1),
+                summary="Phones and laptops.",
+                tags=dumps(["hardware"]),
+            )
+            db.add_all([agent, gadget])
+            db.flush()
+            db.add_all([
+                ItemSource(item_id=agent.id, source_id="lab", source_name="Model Lab", url=agent.url, canonical_url=agent.canonical_url, tags=dumps(["agents"])),
+                ItemSource(item_id=gadget.id, source_id="media", source_name="Tech Media", url=gadget.url, canonical_url=gadget.canonical_url, tags=dumps(["hardware"])),
+            ])
+            upsert_external_trend_signal(
+                db,
+                provider="hn",
+                signal_key="hn-agent",
+                title="OpenAI agent breakthrough",
+                url=agent.url,
+                score=92,
+                tags=["agents"],
+                entities=["OpenAI"],
+            )
+            db.commit()
+            agent_id = agent.id
+
+        with TestClient(app) as client:
+            response = client.patch(
+                "/api/recommendation/profile",
+                json={"interests": ["AI agents"], "tags": ["agents"], "entities": ["OpenAI"], "trend_providers": ["hn"]},
+            )
+            assert response.status_code == 200, response.text
+            profile = response.json()
+            assert profile["interests"] == ["AI agents"]
+
+        with SessionLocal() as db:
+            build_recommendation_profile(db)
+            scored = score_recommendations(db)
+            assert scored == 2
+            cache = db.execute(select(ItemRecommendationScore).where(ItemRecommendationScore.item_id == agent_id)).scalar_one()
+            assert cache.score > 40
+            components = loads(cache.components_json, {})
+            assert components["personal_match"] > 0
+            assert components["trend_breakthrough"] > 0
+            resolved = resolve_item_query_params(db, preset_id="for-you")
+            items, total = query_items(db, **resolved)
+            assert total == 2
+            assert items[0].id == agent_id
+            assert "hn trend" in items[0]._recommendation_reasons
+
+        with TestClient(app) as client:
+            response = client.post(f"/api/items/{agent_id}/events", json={"event_type": "less_like_this", "metadata": {"surface": "test"}})
+            assert response.status_code == 200, response.text
+            response = client.post(f"/api/items/{agent_id}/events", json={"event_type": "dismiss"})
+            assert response.status_code == 200, response.text
+
+        with SessionLocal() as db:
+            build_recommendation_profile(db)
+            score_recommendations(db)
+            events = db.execute(select(UserItemEvent.event_type).where(UserItemEvent.item_id == agent_id)).scalars().all()
+            assert "less_like_this" in events
+            assert "dismiss" in events
+            row = db.get(UserPreference, "default")
+            implicit = loads(row.implicit_json, {})
+            assert implicit["tags"]["agents"] < 0
+            resolved = resolve_item_query_params(db, preset_id="for-you")
+            items, total = query_items(db, **resolved)
+            assert total == 2
+            assert items[0].id != agent_id
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "for-you-recommendations.db"),
     )
     assert result.stdout.strip() == "ok"
 

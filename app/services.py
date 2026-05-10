@@ -1,10 +1,13 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import hashlib
+import math
 from pathlib import Path
 import re
 from typing import Any
 from uuid import uuid4
 
+import httpx
 import yaml
 from sqlalchemy import Select, and_, delete, distinct, func, or_, select
 from sqlalchemy.orm import Session, selectinload
@@ -12,7 +15,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.catalog import DEFAULT_SOURCE_PACK_PATH
 from app.config import Settings, get_settings
 from app.fulltext import extract_generic_article, strip_html
-from app.models import FeedPreset, Fulltext, Item, ItemSource, Job, JobStatus, LLMProvider, LLMUsageEvent, RawEntry, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, UserItemEvent, utcnow
+from app.models import ExternalTrendSignal, FeedPreset, Fulltext, Item, ItemEmbedding, ItemRecommendationScore, ItemSource, Job, JobStatus, LLMProvider, LLMUsageEvent, RawEntry, RecommendationRun, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, UserItemEvent, UserPreference, utcnow
 from app.schemas import ItemOut, SourceAttemptIn, SourceAttemptOut, SourceDefinitionIn, SourceDefinitionOut, SourceDefinitionPatch, SourceOut, SourcePatch, SourceRuntimeOut, SourceIn
 from app.source_catalog import append_source_definition_to_catalog, definition_from_source, sync_source_catalog, update_source_definition_in_catalog, upsert_source_definition
 from app.subscriptions import subscribed_source_ids
@@ -23,6 +26,17 @@ from app.utils import canonicalize_url, dedupe_key_from_parts, dumps, extract_en
 
 LLM_TAG_MAX_PER_FETCH = 20
 FEED_PRESETS_PATH = Path(__file__).resolve().parent.parent / "config" / "feed-presets.yaml"
+RECOMMENDATION_PROFILE_ID = "default"
+RECOMMENDATION_MODEL_VERSION = "hybrid-v1"
+RECOMMENDATION_EMBEDDING_MODEL = "local-hash-v1"
+RECOMMENDATION_SCORE_TTL_MINUTES = 45
+RECOMMENDATION_WEIGHTS = {
+    "personal_match": 35.0,
+    "trend_breakthrough": 25.0,
+    "source_importance": 20.0,
+    "recency": 10.0,
+    "quality": 10.0,
+}
 
 PRIORITY_TIERS: dict[str, tuple[int, int | None, str]] = {
     "p0": (0, 24, "P0 核心"),
@@ -360,6 +374,7 @@ def item_to_out(item: Item, db: Session | None = None) -> ItemOut:
         summary_status=item.summary_status,
         recommendation_score=getattr(item, "_recommendation_score", None),
         recommendation_reasons=getattr(item, "_recommendation_reasons", []),
+        recommendation_components=getattr(item, "_recommendation_components", {}),
         sources=item_sources,
     )
 
@@ -1264,7 +1279,7 @@ def resolve_item_query_params(
             resolved[key] = value
     if resolved["hidden"] is None:
         resolved["hidden"] = False
-    if resolved["rank"] not in {"latest", "recommended"}:
+    if resolved["rank"] not in {"latest", "recommended", "for_you"}:
         resolved["rank"] = "latest"
     return resolved
 
@@ -1321,6 +1336,21 @@ def query_items(
         if days:
             cutoff = datetime.now(timezone.utc) - timedelta(days=days)
             filters.append(or_(Item.published_at >= cutoff, and_(Item.published_at.is_(None), Item.created_at >= cutoff)))
+    elif rank == "for_you":
+        now = datetime.now(timezone.utc)
+        recent_cutoff = now - timedelta(days=30)
+        extended_cutoff = now - timedelta(days=90)
+        filters.append(
+            or_(
+                Item.published_at >= recent_cutoff,
+                and_(Item.published_at.is_(None), Item.created_at >= recent_cutoff),
+                and_(
+                    Item.read.is_(False),
+                    _item_has_priority([(0, 74)]),
+                    or_(Item.published_at >= extended_cutoff, and_(Item.published_at.is_(None), Item.created_at >= extended_cutoff)),
+                ),
+            )
+        )
     if q:
         term = f"%{q}%"
         filters.append(
@@ -1352,13 +1382,22 @@ def query_items(
         stmt = stmt.where(and_(*filters))
     count_stmt = select(func.count()).select_from(stmt.subquery())
     total = db.execute(count_stmt).scalar_one()
-    if rank == "recommended":
+    if rank in {"recommended", "for_you"}:
         rows = db.execute(stmt.order_by(Item.published_at.desc().nullslast(), Item.created_at.desc(), Item.id.desc())).scalars().all()
-        profile = _preference_profile(db)
+        profile = recommendation_profile_weights(db)
+        cached_scores = _cached_recommendation_scores(db, [item.id for item in rows]) if rank == "for_you" else {}
         for item in rows:
-            score, reasons = recommendation_for_item(db, item, profile)
+            cached = cached_scores.get(item.id)
+            if rank == "for_you" and cached:
+                score = float(cached["score"])
+                reasons = cached["reasons"]
+                components = cached["components"]
+            else:
+                fallback_mode = "recommended" if rank == "for_you" else rank
+                score, reasons, components = recommendation_for_item(db, item, profile, mode=fallback_mode)
             setattr(item, "_recommendation_score", score)
             setattr(item, "_recommendation_reasons", reasons)
+            setattr(item, "_recommendation_components", components)
         rows.sort(key=lambda item: (getattr(item, "_recommendation_score", 0.0), _sort_datetime(item), item.id), reverse=True)
         return rows[offset : offset + limit], total
     rows = db.execute(stmt.order_by(Item.published_at.desc().nullslast(), Item.created_at.desc()).offset(offset).limit(limit)).scalars().all()
@@ -1397,6 +1436,9 @@ def record_item_event(db: Session, item_id: str, event_type: str, source_id: str
         raise KeyError(item_id)
     event = UserItemEvent(item_id=item_id, event_type=event_type, source_id=source_id or "", metadata_json=dumps(metadata or {}))
     db.add(event)
+    if event_type in {"open", "read", "star", "hide", "more_like_this", "less_like_this", "dismiss"}:
+        _apply_event_to_implicit_profile(db, item, event_type)
+    _expire_recommendation_scores(db, item_id=item_id)
     db.commit()
     db.refresh(event)
     return item_event_to_dict(event)
@@ -1413,51 +1455,36 @@ def item_event_to_dict(event: UserItemEvent) -> dict[str, Any]:
     }
 
 
-def recommendation_for_item(db: Session, item: Item, profile: dict[str, dict[str, float]] | None = None) -> tuple[float, list[str]]:
+def recommendation_for_item(
+    db: Session,
+    item: Item,
+    profile: dict[str, dict[str, float]] | None = None,
+    *,
+    mode: str = "recommended",
+) -> tuple[float, list[str], dict[str, float]]:
     profile = profile or {}
-    score = 0.0
     reasons: list[str] = []
     source_rows = _item_source_priority_rows(db, item)
-    if source_rows:
-        best = min(source_rows, key=lambda row: row["priority"])
-        tier = priority_tier(best["priority"])
-        source_score = {"p0": 40.0, "p1": 25.0, "p2": 12.0, "p3": 4.0}.get(tier, 8.0)
-        score += source_score
-        reasons.append(f"{PRIORITY_TIERS[tier][2]} source: {best['source_name']}")
-    else:
-        score += 8.0
-    now = datetime.now(timezone.utc)
-    item_time = _sort_datetime(item)
-    age_days = max((now - item_time).total_seconds() / 86400, 0)
-    if age_days <= 1:
-        score += 20.0
-        reasons.append("recent: today")
-    elif age_days <= 3:
-        score += 12.0
-        reasons.append("recent: 3d")
-    elif age_days <= 7:
-        score += 6.0
-        reasons.append("recent: 7d")
-    tag_matches = _weighted_matches(loads(item.tags, []), profile.get("tags", {}), limit=3)
-    entity_matches = _weighted_matches(loads(item.entities, []), profile.get("entities", {}), limit=2)
-    source_matches = _weighted_matches([row["source_id"] for row in source_rows], profile.get("sources", {}), limit=2)
-    platform_matches = _weighted_matches([row["platform"] for row in source_rows] or [item.platform], profile.get("platforms", {}), limit=1)
-    content_matches = _weighted_matches([item.content_type], profile.get("content_types", {}), limit=1)
-    preference_score = sum(weight for _value, weight in [*tag_matches, *entity_matches, *source_matches, *platform_matches, *content_matches])
-    if preference_score:
-        score += preference_score
-        labels = [value for value, _weight in [*tag_matches, *entity_matches, *source_matches, *platform_matches, *content_matches]][:4]
-        reasons.append(f"matches: {', '.join(labels)}")
-    if item.read:
-        score -= 6.0
-        reasons.append("already read")
-    opened = db.execute(
-        select(func.count(UserItemEvent.id)).where(UserItemEvent.item_id == item.id, UserItemEvent.event_type == "open")
-    ).scalar_one()
-    if opened:
-        score -= 4.0
-        reasons.append("opened before")
-    return round(score, 3), reasons[:5]
+    source_score, source_reasons = _source_importance_score(source_rows)
+    personal_score, personal_reasons = _personal_match_score(item, source_rows, profile)
+    recency_score, recency_reasons = _recency_score(item)
+    quality_score, quality_reasons = _quality_score(item)
+    trend_score, trend_reasons = _trend_breakthrough_score(db, item, profile) if mode == "for_you" else (0.0, [])
+    penalty_score, penalty_reasons = _interaction_penalty(db, item)
+    components = {
+        "personal_match": round(personal_score, 3),
+        "trend_breakthrough": round(trend_score, 3),
+        "source_importance": round(source_score, 3),
+        "recency": round(recency_score, 3),
+        "quality": round(quality_score, 3),
+        "interaction_penalty": round(penalty_score, 3),
+    }
+    total = sum(components.values())
+    for bucket in [personal_reasons, trend_reasons, source_reasons, recency_reasons, quality_reasons, penalty_reasons]:
+        for reason in bucket:
+            if reason not in reasons:
+                reasons.append(reason)
+    return round(total, 3), reasons[:6], components
 
 
 def _item_source_priority_rows(db: Session, item: Item) -> list[dict[str, Any]]:
@@ -1478,26 +1505,134 @@ def _item_source_priority_rows(db: Session, item: Item) -> list[dict[str, Any]]:
     ]
 
 
-def _preference_profile(db: Session) -> dict[str, dict[str, float]]:
-    profile: dict[str, dict[str, float]] = {
+def recommendation_profile_weights(db: Session, profile_id: str = RECOMMENDATION_PROFILE_ID) -> dict[str, dict[str, float]]:
+    profile = _empty_profile_weights()
+    row = db.get(UserPreference, profile_id)
+    if row:
+        explicit = loads(row.explicit_json, {})
+        implicit = loads(row.implicit_json, {})
+        for bucket, values in explicit.items():
+            if bucket not in profile:
+                continue
+            for value in _normalize_list(values):
+                _bump(profile[bucket], value, 8.0)
+        for bucket, weights in implicit.items():
+            if bucket not in profile or not isinstance(weights, dict):
+                continue
+            for key, weight in weights.items():
+                _bump(profile[bucket], key, float(weight or 0.0))
+        excluded = loads(row.excluded_json, {})
+        profile["excluded_terms"] = {str(value).strip().lower(): -20.0 for value in _normalize_list(excluded.get("terms"))}
+        settings = loads(row.settings_json, {})
+        profile["trend_providers"] = {str(value).strip().lower(): 1.0 for value in _normalize_list(settings.get("trend_providers"))}
+        profile["weights"] = {str(key): float(value) for key, value in (settings.get("weights") or {}).items() if isinstance(value, (int, float))}
+    event_profile = _event_preference_profile(db)
+    for bucket, weights in event_profile.items():
+        for key, weight in weights.items():
+            _bump(profile[bucket], key, weight)
+    return profile
+
+
+def get_recommendation_profile(db: Session, profile_id: str = RECOMMENDATION_PROFILE_ID) -> dict[str, Any]:
+    row = _ensure_user_preference(db, profile_id)
+    explicit = loads(row.explicit_json, {})
+    excluded = loads(row.excluded_json, {})
+    settings = loads(row.settings_json, {})
+    return {
+        "profile_id": row.profile_id,
+        "interests": _normalize_list(explicit.get("interests")),
+        "excluded_terms": _normalize_list(excluded.get("terms")),
+        "source_ids": _normalize_list(explicit.get("sources")),
+        "tags": _normalize_list(explicit.get("tags")),
+        "entities": _normalize_list(explicit.get("entities")),
+        "platforms": _normalize_list(explicit.get("platforms")),
+        "content_types": _normalize_list(explicit.get("content_types")),
+        "trend_providers": _normalize_list(settings.get("trend_providers")) or ["hn"],
+        "weights": {**RECOMMENDATION_WEIGHTS, **(settings.get("weights") or {})},
+        "implicit": loads(row.implicit_json, {}),
+        "updated_at": row.updated_at,
+    }
+
+
+def patch_recommendation_profile(db: Session, payload: dict[str, Any], profile_id: str = RECOMMENDATION_PROFILE_ID) -> dict[str, Any]:
+    row = _ensure_user_preference(db, profile_id)
+    explicit = loads(row.explicit_json, {})
+    excluded = loads(row.excluded_json, {})
+    settings = loads(row.settings_json, {})
+    mapping = {
+        "interests": "interests",
+        "source_ids": "sources",
+        "tags": "tags",
+        "entities": "entities",
+        "platforms": "platforms",
+        "content_types": "content_types",
+    }
+    for public_key, stored_key in mapping.items():
+        if public_key in payload and payload[public_key] is not None:
+            explicit[stored_key] = _dedupe_values(payload[public_key])
+    if "excluded_terms" in payload and payload["excluded_terms"] is not None:
+        excluded["terms"] = _dedupe_values(payload["excluded_terms"])
+    if "trend_providers" in payload and payload["trend_providers"] is not None:
+        settings["trend_providers"] = _dedupe_values(payload["trend_providers"])
+    if "weights" in payload and payload["weights"] is not None:
+        settings["weights"] = {str(key): float(value) for key, value in payload["weights"].items()}
+    row.explicit_json = dumps(explicit)
+    row.excluded_json = dumps(excluded)
+    row.settings_json = dumps(settings)
+    _expire_recommendation_scores(db, profile_id=profile_id)
+    db.commit()
+    db.refresh(row)
+    return get_recommendation_profile(db, profile_id)
+
+
+def _ensure_user_preference(db: Session, profile_id: str = RECOMMENDATION_PROFILE_ID) -> UserPreference:
+    row = db.get(UserPreference, profile_id)
+    if row:
+        return row
+    row = UserPreference(
+        profile_id=profile_id,
+        explicit_json=dumps({}),
+        implicit_json=dumps({}),
+        excluded_json=dumps({"terms": []}),
+        settings_json=dumps({"trend_providers": ["hn"], "weights": RECOMMENDATION_WEIGHTS}),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def _empty_profile_weights() -> dict[str, dict[str, float]]:
+    return {
         "tags": {},
         "entities": {},
         "sources": {},
         "platforms": {},
         "content_types": {},
+        "interests": {},
+        "excluded_terms": {},
+        "trend_providers": {},
+        "weights": {},
     }
+
+
+def _event_preference_profile(db: Session) -> dict[str, dict[str, float]]:
+    profile = _empty_profile_weights()
     rows = db.execute(
         select(UserItemEvent, Item)
         .join(Item, Item.id == UserItemEvent.item_id)
-        .where(UserItemEvent.event_type.in_(["open", "read", "star", "hide"]))
+        .where(UserItemEvent.event_type.in_(["open", "read", "star", "hide", "more_like_this", "less_like_this", "dismiss"]))
         .order_by(UserItemEvent.created_at.desc(), UserItemEvent.id.desc())
         .limit(500)
     ).all()
-    weights = {"star": 6.0, "open": 1.5, "read": 1.0, "hide": -8.0}
+    weights = {"star": 6.0, "more_like_this": 4.5, "open": 1.5, "read": 1.0, "less_like_this": -5.0, "hide": -8.0, "dismiss": -8.0}
+    now = datetime.now(timezone.utc)
     for event, item in rows:
         weight = weights.get(event.event_type, 0.0)
         if not weight:
             continue
+        event_time = _aware_datetime(event.created_at) or now
+        age_days = max((now - event_time).total_seconds() / 86400, 0)
+        weight *= max(0.2, math.exp(-age_days / 30.0))
         for tag in loads(item.tags, []):
             _bump(profile["tags"], tag, weight)
         for entity in loads(item.entities, []):
@@ -1507,6 +1642,39 @@ def _preference_profile(db: Session) -> dict[str, dict[str, float]]:
         for source in item_sources_for_item(db, item):
             _bump(profile["sources"], source.get("source_id", ""), weight)
     return profile
+
+
+def _apply_event_to_implicit_profile(db: Session, item: Item, event_type: str) -> None:
+    row = _ensure_user_preference(db)
+    implicit = loads(row.implicit_json, {})
+    weights = {"star": 4.0, "more_like_this": 3.0, "open": 0.8, "read": 0.5, "less_like_this": -4.0, "hide": -6.0, "dismiss": -7.0}
+    weight = weights.get(event_type, 0.0)
+    if not weight:
+        return
+    for bucket in ["tags", "entities", "sources", "platforms", "content_types"]:
+        implicit.setdefault(bucket, {})
+    for tag in loads(item.tags, []):
+        _bump(implicit["tags"], tag, weight)
+    for entity in loads(item.entities, []):
+        _bump(implicit["entities"], entity, weight)
+    _bump(implicit["platforms"], item.platform, weight)
+    _bump(implicit["content_types"], item.content_type, weight)
+    for source in item_sources_for_item(db, item):
+        _bump(implicit["sources"], source.get("source_id", ""), weight)
+    row.implicit_json = dumps(_clamp_profile_weights(implicit))
+
+
+def _clamp_profile_weights(profile: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+    clamped: dict[str, dict[str, float]] = {}
+    for bucket, values in profile.items():
+        if not isinstance(values, dict):
+            continue
+        clamped[bucket] = {
+            key: round(max(min(float(value or 0.0), 30.0), -30.0), 3)
+            for key, value in values.items()
+            if str(key).strip() and abs(float(value or 0.0)) >= 0.05
+        }
+    return clamped
 
 
 def _bump(bucket: dict[str, float], key: str, weight: float) -> None:
@@ -1524,6 +1692,436 @@ def _weighted_matches(values: list[str], weights: dict[str, float], limit: int) 
             matches.append((str(value), min(weight, 12.0)))
     matches.sort(key=lambda row: row[1], reverse=True)
     return matches[:limit]
+
+
+def _source_importance_score(source_rows: list[dict[str, Any]]) -> tuple[float, list[str]]:
+    if not source_rows:
+        return 6.0, []
+    best = min(source_rows, key=lambda row: row["priority"])
+    tier = priority_tier(best["priority"])
+    score = {"p0": 20.0, "p1": 14.0, "p2": 8.0, "p3": 3.0}.get(tier, 6.0)
+    return score, [f"{PRIORITY_TIERS[tier][2]} source: {best['source_name']}"]
+
+
+def _personal_match_score(item: Item, source_rows: list[dict[str, Any]], profile: dict[str, dict[str, float]]) -> tuple[float, list[str]]:
+    text = " ".join([item.title, item.chinese_title, item.summary, item.raw_text[:1000]]).lower()
+    for term in profile.get("excluded_terms", {}):
+        if term and term in text:
+            return -25.0, [f"excluded term: {term}"]
+    matches = [
+        *_weighted_matches(loads(item.tags, []), profile.get("tags", {}), limit=3),
+        *_weighted_matches(loads(item.entities, []), profile.get("entities", {}), limit=3),
+        *_weighted_matches([row["source_id"] for row in source_rows], profile.get("sources", {}), limit=2),
+        *_weighted_matches([row["platform"] for row in source_rows] or [item.platform], profile.get("platforms", {}), limit=2),
+        *_weighted_matches([item.content_type], profile.get("content_types", {}), limit=1),
+    ]
+    for interest in profile.get("interests", {}):
+        if interest and interest in text:
+            matches.append((interest, 8.0))
+    score = min(sum(weight for _value, weight in matches), 35.0)
+    if not matches:
+        return 0.0, []
+    labels = [value for value, _weight in sorted(matches, key=lambda row: row[1], reverse=True)[:4]]
+    return score, [f"matches: {', '.join(labels)}"]
+
+
+def _recency_score(item: Item) -> tuple[float, list[str]]:
+    age_days = _item_age_days(item)
+    if age_days <= 1:
+        return 10.0, ["recent: 24h"]
+    if age_days <= 3:
+        return 7.0, ["recent: 3d"]
+    if age_days <= 7:
+        return 4.0, ["recent: 7d"]
+    if age_days <= 30:
+        return 1.5, []
+    return 0.0, []
+
+
+def _quality_score(item: Item) -> tuple[float, list[str]]:
+    score = 0.0
+    reasons: list[str] = []
+    if item.summary_status == SummaryStatus.ready.value:
+        score += 4.0
+        reasons.append("AI summary ready")
+    if len(item.raw_text or "") >= 1200:
+        score += 3.0
+    if loads(item.tags, []) or loads(item.entities, []):
+        score += 2.0
+    if item.url or item.canonical_url:
+        score += 1.0
+    return min(score, 10.0), reasons
+
+
+def _trend_breakthrough_score(db: Session, item: Item, profile: dict[str, dict[str, float]]) -> tuple[float, list[str]]:
+    score = 0.0
+    reasons: list[str] = []
+    source_count = len(item_sources_for_item(db, item))
+    if source_count > 1:
+        score += min(8.0, 3.0 + source_count * 2.0)
+        reasons.append(f"{source_count} sources")
+    tag_burst = _tag_burst_score(db, loads(item.tags, []))
+    if tag_burst:
+        score += tag_burst
+        reasons.append("tag momentum")
+    trend_score, trend_reasons = _external_trend_score(db, item, profile)
+    score += trend_score
+    reasons.extend(trend_reasons)
+    return min(score, 25.0), reasons[:3]
+
+
+def _interaction_penalty(db: Session, item: Item) -> tuple[float, list[str]]:
+    reasons = []
+    penalty = 0.0
+    if item.hidden:
+        return -1000.0, ["hidden"]
+    if item.read:
+        penalty -= 3.0
+        reasons.append("already read")
+    event_counts = dict(
+        db.execute(
+            select(UserItemEvent.event_type, func.count(UserItemEvent.id))
+            .where(UserItemEvent.item_id == item.id, UserItemEvent.event_type.in_(["open", "dismiss", "less_like_this"]))
+            .group_by(UserItemEvent.event_type)
+        ).all()
+    )
+    if event_counts.get("open"):
+        penalty -= 2.0
+        reasons.append("opened before")
+    if event_counts.get("less_like_this"):
+        penalty -= 12.0
+        reasons.append("reduced by feedback")
+    if event_counts.get("dismiss"):
+        penalty -= 40.0
+        reasons.append("dismissed")
+    return penalty, reasons
+
+
+def _item_age_days(item: Item) -> float:
+    now = datetime.now(timezone.utc)
+    item_time = _sort_datetime(item)
+    return max((now - item_time).total_seconds() / 86400, 0)
+
+
+def _tag_burst_score(db: Session, tags: list[str]) -> float:
+    normalized = [str(tag).strip().lower() for tag in tags if str(tag).strip()]
+    if not normalized:
+        return 0.0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    score = 0.0
+    for tag in normalized[:5]:
+        count = db.execute(
+            select(func.count(Item.id)).where(
+                Item.created_at >= cutoff,
+                Item.tags.ilike(f"%{tag}%"),
+            )
+        ).scalar_one()
+        if count >= 3:
+            score = max(score, min(7.0, float(count)))
+    return score
+
+
+def _external_trend_score(db: Session, item: Item, profile: dict[str, dict[str, float]]) -> tuple[float, list[str]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    provider_weights = profile.get("trend_providers", {})
+    signals = db.execute(
+        select(ExternalTrendSignal)
+        .where(ExternalTrendSignal.observed_at >= cutoff)
+        .order_by(ExternalTrendSignal.score.desc())
+        .limit(200)
+    ).scalars().all()
+    item_urls = {canonicalize_url(item.url or ""), canonicalize_url(item.canonical_url or "")} - {""}
+    item_text = " ".join([item.title, item.chinese_title, item.summary]).lower()
+    item_terms = {str(value).strip().lower() for value in [*loads(item.tags, []), *loads(item.entities, [])] if str(value).strip()}
+    best_score = 0.0
+    best_provider = ""
+    for signal in signals:
+        provider = signal.provider.lower()
+        if provider_weights and provider not in provider_weights:
+            continue
+        matched = False
+        signal_url = canonicalize_url(signal.url or "")
+        if signal_url and signal_url in item_urls:
+            matched = True
+        signal_title = (signal.title or "").strip().lower()
+        if signal_title and (signal_title in item_text or item.title.strip().lower() in signal_title):
+            matched = True
+        signal_terms = {str(value).strip().lower() for value in [*loads(signal.tags_json, []), *loads(signal.entities_json, [])] if str(value).strip()}
+        if item_terms and signal_terms and item_terms & signal_terms:
+            matched = True
+        if not matched:
+            continue
+        normalized = min(max(float(signal.score or 0.0), 0.0), 100.0) / 100.0
+        score = 6.0 + normalized * 10.0
+        if score > best_score:
+            best_score = score
+            best_provider = signal.provider
+    if not best_score:
+        return 0.0, []
+    return min(best_score, 16.0), [f"{best_provider} trend"]
+
+
+def _cached_recommendation_scores(db: Session, item_ids: list[str], profile_id: str = RECOMMENDATION_PROFILE_ID) -> dict[str, dict[str, Any]]:
+    if not item_ids:
+        return {}
+    now = datetime.now(timezone.utc)
+    rows = db.execute(
+        select(ItemRecommendationScore)
+        .where(
+            ItemRecommendationScore.item_id.in_(item_ids),
+            ItemRecommendationScore.profile_id == profile_id,
+            ItemRecommendationScore.rank_mode == "for_you",
+            ItemRecommendationScore.expires_at >= now,
+        )
+    ).scalars().all()
+    return {
+        row.item_id: {
+            "score": row.score,
+            "components": loads(row.components_json, {}),
+            "reasons": loads(row.reasons_json, []),
+        }
+        for row in rows
+    }
+
+
+def score_recommendations(db: Session, profile_id: str = RECOMMENDATION_PROFILE_ID, limit: int = 600) -> int:
+    run = RecommendationRun(job_type="score_recommendations", profile_id=profile_id, status="running", model_version=RECOMMENDATION_MODEL_VERSION)
+    db.add(run)
+    db.flush()
+    try:
+        items = _recommendation_candidates(db, limit=limit)
+        profile = recommendation_profile_weights(db, profile_id)
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=RECOMMENDATION_SCORE_TTL_MINUTES)
+        for item in items:
+            score, reasons, components = recommendation_for_item(db, item, profile, mode="for_you")
+            row = db.execute(
+                select(ItemRecommendationScore).where(
+                    ItemRecommendationScore.item_id == item.id,
+                    ItemRecommendationScore.profile_id == profile_id,
+                    ItemRecommendationScore.rank_mode == "for_you",
+                )
+            ).scalar_one_or_none()
+            if not row:
+                row = ItemRecommendationScore(item_id=item.id, profile_id=profile_id, rank_mode="for_you")
+                db.add(row)
+            row.score = score
+            row.components_json = dumps(components)
+            row.reasons_json = dumps(reasons)
+            row.model_version = RECOMMENDATION_MODEL_VERSION
+            row.computed_at = utcnow()
+            row.expires_at = expires_at
+        run.status = "succeeded"
+        run.item_count = len(items)
+        run.finished_at = utcnow()
+        db.commit()
+        return len(items)
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        run = db.get(RecommendationRun, run.id)
+        if run:
+            run.status = "failed"
+            run.error_message = str(exc)[-4000:]
+            run.finished_at = utcnow()
+            db.commit()
+        raise
+
+
+def build_recommendation_profile(db: Session, profile_id: str = RECOMMENDATION_PROFILE_ID) -> dict[str, Any]:
+    row = _ensure_user_preference(db, profile_id)
+    event_profile = _event_preference_profile(db)
+    implicit = loads(row.implicit_json, {})
+    for bucket, weights in event_profile.items():
+        if bucket in {"excluded_terms", "trend_providers", "weights"}:
+            continue
+        implicit.setdefault(bucket, {})
+        for key, value in weights.items():
+            implicit[bucket][key] = round(value, 3)
+    row.implicit_json = dumps(_clamp_profile_weights(implicit))
+    db.commit()
+    db.refresh(row)
+    return get_recommendation_profile(db, profile_id)
+
+
+def embed_item(db: Session, item_id: str) -> bool:
+    item = db.get(Item, item_id)
+    if not item:
+        return False
+    text = recommendation_embedding_text(db, item)
+    input_hash = stable_hash(RECOMMENDATION_EMBEDDING_MODEL, text)
+    existing = db.get(ItemEmbedding, item_id)
+    if existing and existing.input_hash == input_hash:
+        return False
+    vector = _hash_embedding(text)
+    row = existing or ItemEmbedding(item_id=item_id)
+    row.model = RECOMMENDATION_EMBEDDING_MODEL
+    row.input_hash = input_hash
+    row.vector_json = dumps(vector)
+    row.text = text[:8000]
+    db.add(row)
+    _expire_recommendation_scores(db, item_id=item_id)
+    db.commit()
+    return True
+
+
+def recommendation_embedding_text(db: Session, item: Item) -> str:
+    source_rows = _item_source_priority_rows(db, item)
+    source_text = " ".join(f"{row['source_name']} {row['platform']}" for row in source_rows)
+    return "\n".join(
+        [
+            item.title or "",
+            item.chinese_title or "",
+            item.summary or "",
+            item.raw_text[:2000] or "",
+            " ".join(loads(item.tags, [])),
+            " ".join(loads(item.entities, [])),
+            source_text,
+            item.content_type or "",
+            item.platform or "",
+        ]
+    ).strip()
+
+
+def _hash_embedding(text: str, dimensions: int = 64) -> list[float]:
+    vector = [0.0] * dimensions
+    for token in re.findall(r"[\w.+#-]+", text.lower()):
+        digest = hashlib.sha256(token.encode("utf-8")).digest()
+        index = int.from_bytes(digest[:2], "big") % dimensions
+        sign = 1.0 if digest[2] % 2 == 0 else -1.0
+        vector[index] += sign
+    norm = math.sqrt(sum(value * value for value in vector)) or 1.0
+    return [round(value / norm, 6) for value in vector]
+
+
+def refresh_external_trends(db: Session) -> int:
+    run = RecommendationRun(job_type="refresh_external_trends", profile_id=RECOMMENDATION_PROFILE_ID, status="running", model_version=RECOMMENDATION_MODEL_VERSION)
+    db.add(run)
+    db.flush()
+    imported = 0
+    errors: list[str] = []
+    try:
+        imported += _refresh_hn_trends(db)
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"hn: {type(exc).__name__} {exc}")
+    run.status = "succeeded" if not errors else "failed" if imported == 0 else "succeeded"
+    run.error_message = "\n".join(errors)[-4000:]
+    run.item_count = imported
+    run.finished_at = utcnow()
+    db.commit()
+    return imported
+
+
+def _refresh_hn_trends(db: Session) -> int:
+    url = "https://hn.algolia.com/api/v1/search_by_date?tags=story&hitsPerPage=40&query=AI"
+    with httpx.Client(timeout=12.0, follow_redirects=True) as client:
+        response = client.get(url)
+        response.raise_for_status()
+        payload = response.json()
+    imported = 0
+    for hit in payload.get("hits", []):
+        title = str(hit.get("title") or hit.get("story_title") or "").strip()
+        link = str(hit.get("url") or hit.get("story_url") or "").strip()
+        object_id = str(hit.get("objectID") or stable_hash(title, link))
+        if not title:
+            continue
+        points = float(hit.get("points") or 0)
+        comments = float(hit.get("num_comments") or 0)
+        score = min(100.0, points + comments * 1.5)
+        upsert_external_trend_signal(
+            db,
+            provider="hn",
+            signal_key=object_id,
+            title=title,
+            url=link,
+            score=score,
+            tags=["ai", "hn"],
+            entities=extract_entities(title),
+            metadata={"points": points, "comments": comments},
+        )
+        imported += 1
+    return imported
+
+
+def upsert_external_trend_signal(
+    db: Session,
+    *,
+    provider: str,
+    signal_key: str,
+    title: str = "",
+    url: str = "",
+    score: float = 0.0,
+    tags: list[str] | None = None,
+    entities: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> ExternalTrendSignal:
+    row = db.execute(
+        select(ExternalTrendSignal).where(
+            ExternalTrendSignal.provider == provider,
+            ExternalTrendSignal.signal_key == signal_key,
+        )
+    ).scalar_one_or_none()
+    if not row:
+        row = ExternalTrendSignal(provider=provider, signal_key=signal_key)
+        db.add(row)
+    row.title = title
+    row.url = url
+    row.score = float(score or 0.0)
+    row.tags_json = dumps(tags or [])
+    row.entities_json = dumps(entities or [])
+    row.metadata_json = dumps(metadata or {})
+    row.observed_at = utcnow()
+    _expire_recommendation_scores(db)
+    return row
+
+
+def _recommendation_candidates(db: Session, limit: int) -> list[Item]:
+    subscribed_ids = subscribed_source_ids(db)
+    if not subscribed_ids:
+        return []
+    now = datetime.now(timezone.utc)
+    recent_cutoff = now - timedelta(days=30)
+    extended_cutoff = now - timedelta(days=90)
+    important = _item_has_priority([(0, 74)])
+    stmt = (
+        select(Item)
+        .where(
+            Item.hidden.is_(False),
+            _item_has_source(subscribed_ids),
+            or_(
+                Item.published_at >= recent_cutoff,
+                and_(Item.published_at.is_(None), Item.created_at >= recent_cutoff),
+                and_(Item.read.is_(False), important, or_(Item.published_at >= extended_cutoff, Item.created_at >= extended_cutoff)),
+            ),
+        )
+        .order_by(Item.published_at.desc().nullslast(), Item.created_at.desc(), Item.id.desc())
+        .limit(limit)
+    )
+    return db.execute(stmt).scalars().all()
+
+
+def _expire_recommendation_scores(db: Session, item_id: str | None = None, profile_id: str | None = None) -> None:
+    stmt = select(ItemRecommendationScore)
+    filters = []
+    if item_id:
+        filters.append(ItemRecommendationScore.item_id == item_id)
+    if profile_id:
+        filters.append(ItemRecommendationScore.profile_id == profile_id)
+    if filters:
+        stmt = stmt.where(and_(*filters))
+    for row in db.execute(stmt).scalars():
+        row.expires_at = utcnow() - timedelta(seconds=1)
+
+
+def _dedupe_values(values: Any) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in _normalize_list(values):
+        cleaned = str(value).strip()
+        key = cleaned.lower()
+        if not cleaned or key in seen:
+            continue
+        seen.add(key)
+        result.append(cleaned)
+    return result
 
 
 async def persist_entries(db: Session, source: Source, entries: list[Any], settings: Settings) -> tuple[int, int, int]:
@@ -1546,6 +2144,7 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
     )
     min_feed_fulltext_chars = int(fulltext_config.get("min_feed_chars", fulltext_config.get("min_feed_fulltext_chars", 1200)) or 1200)
     llm_tag_attempts = 0
+    touched_item_ids: set[str] = set()
     for entry in entries:
         text_for_filter = f"{entry.title}\n{entry.summary}\n{entry.content}"
         if not text_matches(text_for_filter, include, exclude):
@@ -1669,9 +2268,13 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
             )
         db.flush()
         item.tags = dumps(_merged_item_source_tags(db, item.id) if item.id else final_tag_result.tags)
+        if item.id:
+            touched_item_ids.add(item.id)
         if _prepare_auto_summary_item(db, source, item, settings):
             queue_job(db, "summarize_item", {"item_id": item.id})
     db.commit()
+    for item_id in touched_item_ids:
+        queue_job(db, "embed_item", {"item_id": item_id}, max_attempts=2)
     return raw_count, item_count, fulltext_success
 
 

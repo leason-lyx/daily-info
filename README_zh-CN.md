@@ -6,10 +6,10 @@ Daily Info 是一个自托管的信息阅读台，用来聚合论文、工程博
 
 ## 功能特性
 
-- 统一 Feed：支持论文、博客、帖子，带搜索、来源筛选、确定性跨来源去重、摘要状态、已读/收藏/隐藏和按来源策略清洗/生成的标签。
+- 统一 Feed：支持论文、博客、帖子，带搜索、来源/优先级筛选、一键预设、For You 推荐视图、确定性跨来源去重、推荐原因、摘要状态、已读/收藏和按来源策略清洗/生成的标签。
 - Source Catalog：内置信息源定义来自 `config/sources/*.yaml`，用户显式订阅后才会抓取并进入默认 Feed。
 - 信息源预览与创建：支持 RSS/Atom、RSSHub route，以及 HTML 列表页 fallback。
-- 后台 worker 和 scheduler：负责抓取、全文提取和可选的自动摘要任务。
+- 后台 worker 和 scheduler：负责抓取、全文提取、可选自动摘要、外部热度刷新、画像构建和推荐分数缓存任务。
 - 健康页：展示 source run、全文覆盖、摘要状态、任务状态和 AI provider 状态。
 - 可选摘要 provider：支持多个 OpenAI-compatible 自定义 API 按顺序降级，以及 Codex CLI。
 - 默认 Docker Compose + SQLite 部署；不需要云服务，也不需要 AI key 就能启动。
@@ -80,6 +80,10 @@ Catalog 是显式订阅模式：
 - 未订阅 source 仍会显示在 Source Catalog 中，便于发现和开启。
 
 当同一内容出现在多个 source 中时，Daily Info 只保存一条由 `dedupe_key` 标识的 item，并通过 `item_sources` 记录全部来源。Feed 和 API 会通过 `sources[]` 返回这些来源；单个 `source_id/source_name` 表示主展示来源。
+
+Feed 预设的内置视图定义在 `config/feed-presets.yaml`，自定义预设保存在数据库。预设会解析成普通 feed filter，同一条 `/api/items` 路径支持 source group/source id、优先级、时间窗口以及 latest/recommended/for-you 排序。source 优先级优先使用订阅上的 `priority_override`，否则使用 catalog 中的 `Source.priority`；数字越小越重要，并在 UI 中映射为 P0-P3。
+
+内置 `For You` 预设优先读取缓存推荐分数，缺失或过期时回退到请求时可解释打分。分数会结合 Settings 里的显式推荐偏好、open/star/more-like-this/less-like-this/dismiss 等行为事件、source 优先级、时效性、内容质量、多来源站内热度和 Hacker News 等外部趋势信号。推荐数据保存在本地 SQLite 中，只影响排序和解释，不会改变订阅、去重或来源归属。
 
 Source definition 可以包含抓取方式、全文策略、摘要策略、过滤规则、标签、分组和元数据。它们应该被视为公开配置，不应包含 API key、cookie、token 或其他 secret；通过网页编辑时也必须遵守这一点。未来如果某个 source 需要认证，catalog 中只保存 secret 引用名，真实 secret 放在运行时配置里。
 

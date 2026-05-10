@@ -3,7 +3,7 @@
 import { Suspense } from "react";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Check, ExternalLink, Eye, EyeOff, RefreshCcw, Save, Search, Sparkles, Star, Trash2 } from "lucide-react";
+import { Ban, Check, ExternalLink, Eye, EyeOff, RefreshCcw, Save, Search, Sparkles, Star, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
 import { api, FeedPreset, Item, Source } from "@/lib/api";
 
 const NO_SOURCE_SENTINEL = "__none__";
@@ -226,7 +226,8 @@ function FeedView() {
     ? searchParams.get("priority_tier") || ""
     : stringList(activePresetFilter.priority_tiers || activePresetFilter.priority_tier)[0] || "";
   const currentSummaryStatus = searchParams.has("summary_status") ? searchParams.get("summary_status") || "" : String(activePresetFilter.summary_status || "");
-  const currentRank = searchParams.has("rank") ? searchParams.get("rank") || "" : (activePreset?.rank?.mode === "recommended" ? "recommended" : "");
+  const presetRank = activePreset?.rank?.mode === "recommended" || activePreset?.rank?.mode === "for_you" ? String(activePreset.rank.mode) : "";
+  const currentRank = searchParams.has("rank") ? searchParams.get("rank") || "" : presetRank;
   const presetAdjusted = Boolean(searchParams.get("preset_id")) && ["source_id", "priority_tier", "since", "q", "summary_status", "rank"].some((key) => searchParams.has(key));
   const selectedSourceIds = useMemo(() => {
     return selectedIdsFromParams(sources, sourceParams);
@@ -410,6 +411,16 @@ function FeedView() {
     }
   }
 
+  async function feedbackAction(item: Item, eventType: "more_like_this" | "less_like_this" | "dismiss") {
+    await api.recordItemEvent(item.id, eventType, { preset_id: activePresetId, rank: currentRank || "latest" });
+    if (eventType === "dismiss") {
+      setItems((rows) => rows.filter((row) => row.id !== item.id));
+      setTotal((value) => Math.max(value - 1, 0));
+      return;
+    }
+    setPresetMessage(eventType === "more_like_this" ? "已记录：更多类似内容" : "已记录：减少类似内容");
+  }
+
   async function pollItemSummary(itemId: string) {
     setSummarizingIds((ids) => new Set(ids).add(itemId));
     try {
@@ -527,6 +538,7 @@ function FeedView() {
             <label htmlFor="feed-rank">Rank</label>
             <select id="feed-rank" value={currentRank} onChange={(e) => setParam("rank", e.target.value)}>
               <option value="">Latest</option>
+              <option value="for_you">For You</option>
               <option value="recommended">Recommended</option>
             </select>
           </div>
@@ -711,6 +723,19 @@ function FeedView() {
                   <RefreshCcw size={16} />
                   {summarizeDisabled ? "生成中" : summarizeButtonLabel(item.summary_status)}
                 </button>
+                {(currentRank === "for_you" || activePresetId === "for-you") ? (
+                  <>
+                    <button className="button" type="button" title="推荐更多类似内容" onClick={() => void feedbackAction(item, "more_like_this")}>
+                      <ThumbsUp size={16} /> 更多类似
+                    </button>
+                    <button className="button" type="button" title="减少类似内容" onClick={() => void feedbackAction(item, "less_like_this")}>
+                      <ThumbsDown size={16} /> 减少类似
+                    </button>
+                    <button className="button" type="button" title="从本次推荐中移除" onClick={() => void feedbackAction(item, "dismiss")}>
+                      <Ban size={16} /> 不感兴趣
+                    </button>
+                  </>
+                ) : null}
               </div>
             </article>
           );

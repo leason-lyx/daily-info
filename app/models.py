@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -233,6 +233,82 @@ class UserItemEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
     item: Mapped[Item] = relationship()
+
+
+class UserPreference(Base):
+    __tablename__ = "user_preferences"
+
+    profile_id: Mapped[str] = mapped_column(String(80), primary_key=True, default="default")
+    explicit_json: Mapped[str] = mapped_column(Text, default="{}")
+    implicit_json: Mapped[str] = mapped_column(Text, default="{}")
+    excluded_json: Mapped[str] = mapped_column(Text, default="{}")
+    settings_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ItemEmbedding(Base):
+    __tablename__ = "item_embeddings"
+
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), primary_key=True)
+    model: Mapped[str] = mapped_column(String(120), default="local-hash-v1")
+    input_hash: Mapped[str] = mapped_column(String(64), default="")
+    vector_json: Mapped[str] = mapped_column(Text, default="[]")
+    text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    item: Mapped[Item] = relationship()
+
+
+class ExternalTrendSignal(Base):
+    __tablename__ = "external_trend_signals"
+    __table_args__ = (UniqueConstraint("provider", "signal_key", name="uq_trend_provider_key"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(80), index=True)
+    signal_key: Mapped[str] = mapped_column(String(180), index=True)
+    url: Mapped[str] = mapped_column(Text, default="")
+    title: Mapped[str] = mapped_column(Text, default="")
+    tags_json: Mapped[str] = mapped_column(Text, default="[]")
+    entities_json: Mapped[str] = mapped_column(Text, default="[]")
+    score: Mapped[float] = mapped_column(Float, default=0.0)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ItemRecommendationScore(Base):
+    __tablename__ = "item_recommendation_scores"
+    __table_args__ = (UniqueConstraint("item_id", "profile_id", "rank_mode", name="uq_item_recommendation_score"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), index=True)
+    profile_id: Mapped[str] = mapped_column(String(80), default="default", index=True)
+    rank_mode: Mapped[str] = mapped_column(String(40), default="for_you", index=True)
+    score: Mapped[float] = mapped_column(Float, default=0.0, index=True)
+    components_json: Mapped[str] = mapped_column(Text, default="{}")
+    reasons_json: Mapped[str] = mapped_column(Text, default="[]")
+    model_version: Mapped[str] = mapped_column(String(80), default="")
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    item: Mapped[Item] = relationship()
+
+
+class RecommendationRun(Base):
+    __tablename__ = "recommendation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_type: Mapped[str] = mapped_column(String(80), default="")
+    profile_id: Mapped[str] = mapped_column(String(80), default="default")
+    status: Mapped[str] = mapped_column(String(40), default="running")
+    model_version: Mapped[str] = mapped_column(String(80), default="")
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    item_count: Mapped[int] = mapped_column(Integer, default=0)
+    error_message: Mapped[str] = mapped_column(Text, default="")
 
 
 class Fulltext(Base):
