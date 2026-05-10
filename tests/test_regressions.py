@@ -41,10 +41,14 @@ def test_docker_context_keeps_source_pack_and_excludes_env_secrets() -> None:
     assert "network_mode" not in compose["services"]["api"]
     assert compose["services"]["api"]["environment"]["DATABASE_URL"] == "${DATABASE_URL:-sqlite:////data/daily-info.db}"
     assert compose["services"]["web"]["environment"]["NEXT_PUBLIC_API_BASE_URL"] == "${NEXT_PUBLIC_API_BASE_URL:-http://api:8000}"
-    assert localhost_compose["services"]["api"]["ports"] == ["127.0.0.1:8000:8000"]
-    assert localhost_compose["services"]["api"]["extra_hosts"] == ["host.docker.internal:host-gateway"]
-    assert localhost_compose["services"]["api"]["environment"]["HTTP_PROXY"] == "${DOCKER_HTTP_PROXY:-}"
-    assert localhost_compose["services"]["web"]["ports"] == ["127.0.0.1:3000:3000"]
+    for service_name in ("api", "worker", "scheduler", "web"):
+        service = localhost_compose["services"][service_name]
+        assert service["network_mode"] == "host"
+        assert "ports" not in service
+        assert service["environment"]["HTTP_PROXY"] == "${HTTP_PROXY:-}"
+    assert localhost_compose["services"]["api"]["command"] == ["uvicorn", "app.api:app", "--host", "127.0.0.1", "--port", "8000"]
+    assert localhost_compose["services"]["web"]["command"] == ["npm", "run", "start", "--", "-H", "127.0.0.1", "-p", "3000"]
+    assert localhost_compose["services"]["worker"]["environment"]["API_BASE_URL"] == "http://127.0.0.1:8000"
     assert localhost_compose["services"]["rsshub"]["ports"] == ["127.0.0.1:1200:1200"]
 
 

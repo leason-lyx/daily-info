@@ -68,7 +68,7 @@ curl -fsS http://127.0.0.1:8000/api/source-definitions
 
 `docker-compose.yml` 是普通 bridge network 的 base 配置，不直接发布端口；`docker-compose.localhost.yml` 负责把 Web/API 绑定到 `127.0.0.1`。如果需要通过 Tailscale 访问，使用 Tailscale Serve 转发 `443 -> 127.0.0.1:3000` 和 `8000 -> 127.0.0.1:8000`，不要让容器直接抢占 tailnet 地址上的 `8000`。
 
-localhost override 默认清空容器内的 `HTTP_PROXY`、`HTTPS_PROXY` 和 `ALL_PROXY`，避免宿主机 `.env` 里的 `127.0.0.1` 代理地址在 bridge 容器内指向容器自己。确实需要容器走代理时，显式设置 `DOCKER_HTTP_PROXY`、`DOCKER_HTTPS_PROXY` 和 `DOCKER_ALL_PROXY`；override 已提供 `host.docker.internal` 的 `host-gateway` 映射，便于连接监听在宿主机可达地址上的代理。
+localhost override 使用 host network 运行本机开发服务，因此容器内的 `127.0.0.1` 与宿主机一致。需要容器走宿主机代理时，在 `.env` 中设置 `HTTP_PROXY`、`HTTPS_PROXY` 和 `ALL_PROXY` 为宿主机可用地址即可，例如 `http://127.0.0.1:7890`；不要在 localhost override 中使用 bridge 网络专用的 `host.docker.internal` 代理地址。
 
 本轮 schema 重构允许重建本地 SQLite 数据。需要重置 Docker volume 时：
 
