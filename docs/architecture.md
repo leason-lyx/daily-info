@@ -2,6 +2,8 @@
 
 Daily Info 采用简单的单体后端加后台进程架构，避免把个人自托管工具拆成复杂微服务。
 
+当前后端按“模块化单体”组织：HTTP transport 在 `app/api.py`，请求级业务动作放在 `app/application/`，领域服务通过 `app/services/` 下的 `feed_query`、`recommendations`、`ingestion`、`source_definitions`、`llm_providers` 和 `presenters` 暴露。`app/services/legacy.py` 暂时保留历史实现并由 `app/services/__init__.py` re-export，便于分阶段迁移而不一次性打断旧导入。Job 侧新增 `app/job_registry.py`、`app/job_runtime.py`、`app/fetch_pipeline.py`、`app/summary_pipeline.py` 和 `app/recommendation_pipeline.py` 作为 typed enqueue、runtime 和领域 pipeline 的导入边界。
+
 ## 服务拓扑
 
 默认 Docker Compose 栈包含四个服务：
@@ -51,13 +53,13 @@ Item / ItemSource / UserItemEvent
 
 关键规则：
 
-- `config/sources/*.yaml` 是内置 catalog 定义，不是运行时 secret 存储。
-- 启动时 API 会同步 catalog 到数据库。
+- `config/sources/*.yaml` 是只读内置 catalog seed，不是运行时 secret 存储。
+- 启动时 API 会同步内置 catalog 到数据库；网页创建和编辑 source 时写数据库，不修改仓库 YAML。
 - 只有已订阅 source 会被 scheduler 抓取，并默认进入 feed。
 - Item 使用确定性 `dedupe_key` 做跨 source 去重；`item_sources` 是来源归属的事实表，source 过滤、订阅过滤、health 统计、source audit 和摘要队列都按它计算。
 - Feed 预设是独立视图层：内置预设来自 `config/feed-presets.yaml`，自定义预设保存在数据库；预设只解析成普通 feed filter，不改变订阅状态。
 - `For You` 推荐使用最近候选窗口，优先展示 30 天内内容；重要源的未读内容可放宽到 90 天。排序优先使用 `ItemRecommendationScore` 缓存分数，缓存缺失或过期时回退到请求时可解释规则；推荐只改变候选展示、排序和解释，不改变订阅、去重或来源归属。
-- 推荐画像由显式 Settings 偏好和带时间衰减的行为事件合并而成，单用户阶段使用 `profile_id="default"`，未来可扩展到多用户。
+- 单用户阶段所有用户态数据使用 `profile_id="default"`。Item 本体只保存内容事实；已读、收藏、隐藏等用户状态写入 `UserItemState`，订阅、行为事件、推荐偏好和推荐缓存也按 profile 隔离，为未来多 profile/多用户保留边界。
 - 外部热度信号通过 adapter 写入 `ExternalTrendSignal`；provider 失败只影响趋势分项，不阻断 feed。Scheduler 只投递 `refresh_external_trends`，worker 在趋势刷新成功后串联投递画像构建和推荐打分，避免同一轮推荐任务乱序执行。
 - 每个 source 可以配置 `tagging` 策略：可信 feed 使用 entry category/tag，不可信 feed 可用 AI 生成主题标签，所有路径都会过滤明显的网页布局/CSS class 噪声。
 - item 入库不等待 AI 摘要完成。
@@ -69,6 +71,7 @@ Item / ItemSource / UserItemEvent
 - Worker 负责慢任务，不把长耗时工作塞进请求响应路径；推荐相关的 embedding、趋势刷新、画像构建和批量打分也通过 job 执行。
 - Scheduler 只负责投递到期任务，真正执行仍交给 worker；推荐刷新默认约每 15 分钟投递一次。
 - SQLite 是默认持久层，启用 WAL；Postgres 目前是可选增强路径。
+- 本轮 schema 不保留旧 SQLite 手写兼容迁移。部署旧数据时需要按发布说明重建 SQLite 文件或 Docker volume。
 
 ## 前端页面
 

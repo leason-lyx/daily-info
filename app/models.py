@@ -5,6 +5,7 @@ from uuid import uuid4
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.context import DEFAULT_PROFILE_ID
 from app.db import Base
 
 
@@ -45,6 +46,9 @@ class Source(Base):
     homepage_url: Mapped[str] = mapped_column(Text, default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    catalog_origin: Mapped[str] = mapped_column(String(40), default="builtin", index=True)
+    catalog_status: Mapped[str] = mapped_column(String(40), default="active", index=True)
+    catalog_version: Mapped[int] = mapped_column(Integer, default=1)
     group: Mapped[str] = mapped_column(String(120), default="General")
     priority: Mapped[int] = mapped_column(Integer, default=100)
     poll_interval: Mapped[int] = mapped_column(Integer, default=3600)
@@ -72,7 +76,7 @@ class Source(Base):
     )
     items: Mapped[list["Item"]] = relationship(back_populates="source")
     runs: Mapped[list["SourceRun"]] = relationship(back_populates="source")
-    subscription: Mapped["SourceSubscription"] = relationship(back_populates="source", cascade="all, delete-orphan")
+    subscription: Mapped["SourceSubscription"] = relationship(back_populates="source", cascade="all, delete-orphan", uselist=False)
     runtime: Mapped["SourceRuntime"] = relationship(back_populates="source", cascade="all, delete-orphan")
 
 
@@ -80,6 +84,7 @@ class SourceSubscription(Base):
     __tablename__ = "source_subscriptions"
 
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.id", ondelete="CASCADE"), primary_key=True)
+    profile_id: Mapped[str] = mapped_column(String(80), default=DEFAULT_PROFILE_ID, index=True)
     subscribed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     priority_override: Mapped[int | None] = mapped_column(Integer)
     settings_override: Mapped[str] = mapped_column(Text, default="{}")
@@ -202,6 +207,23 @@ class Item(Base):
 
     source: Mapped[Source] = relationship(back_populates="items")
     sources: Mapped[list["ItemSource"]] = relationship(back_populates="item", cascade="all, delete-orphan")
+    user_states: Mapped[list["UserItemState"]] = relationship(back_populates="item", cascade="all, delete-orphan")
+
+
+class UserItemState(Base):
+    __tablename__ = "user_item_states"
+    __table_args__ = (UniqueConstraint("profile_id", "item_id", name="uq_user_item_state_profile_item"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_id: Mapped[str] = mapped_column(String(80), default=DEFAULT_PROFILE_ID, index=True)
+    item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), index=True)
+    read: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    starred: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    hidden: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    item: Mapped[Item] = relationship(back_populates="user_states")
 
 
 class ItemSource(Base):
@@ -226,6 +248,7 @@ class UserItemEvent(Base):
     __tablename__ = "user_item_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    profile_id: Mapped[str] = mapped_column(String(80), default=DEFAULT_PROFILE_ID, index=True)
     item_id: Mapped[str] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"), index=True)
     event_type: Mapped[str] = mapped_column(String(40), index=True)
     source_id: Mapped[str] = mapped_column(String(80), default="", index=True)
@@ -328,11 +351,16 @@ class Job(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     type: Mapped[str] = mapped_column(String(60), index=True)
+    queue: Mapped[str] = mapped_column(String(60), default="default", index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=100, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(180), default="", index=True)
     status: Mapped[str] = mapped_column(String(40), default=JobStatus.queued.value, index=True)
     payload: Mapped[str] = mapped_column(Text, default="{}")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error_code: Mapped[str] = mapped_column(String(120), default="")

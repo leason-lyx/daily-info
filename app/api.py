@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.adapters import AdapterError, preview_source
+from app.application.items import ItemNotFound, set_item_flag
 from app.db import get_db, init_db
 from app.jobs import schedule_auto_summaries, schedule_due_sources
 from app.models import Item, ItemSource, Job, JobStatus, LLMProvider, Source, SourceRun, SourceSubscription, Summary, SummaryStatus
@@ -34,41 +35,48 @@ from app.schemas import (
     SourcePatch,
     SourceSubscriptionOut,
 )
-from app.services import (
-    content_audit_for_source,
+from app.services.feed_query import (
     create_feed_preset,
-    create_source_definition,
     delete_feed_preset,
-    export_source_pack,
-    import_source_pack,
-    item_to_out,
-    item_sources_for_item,
-    ensure_initial_llm_provider,
     list_feed_presets,
-    list_source_definitions,
+    patch_feed_preset,
+    query_items,
+    resolve_item_query_params,
+)
+from app.services.legacy import queue_auto_summaries, queue_job, reconcile_auto_summary_statuses
+from app.services.llm_providers import (
+    ensure_initial_llm_provider,
     list_llm_providers,
-    load_runtime_settings,
     llm_provider_out,
     llm_usage_stats,
+    load_runtime_settings,
+    set_setting_value,
+)
+from app.services.presenters import (
+    content_audit_for_source,
+    item_sources_for_item,
+    item_to_out,
     latest_runs,
-    patch_source,
-    patch_feed_preset,
-    patch_recommendation_profile,
-    patch_source_definition,
-    query_items,
-    queue_auto_summaries,
-    queue_job,
-    record_item_event,
-    get_recommendation_profile,
-    reconcile_auto_summary_statuses,
-    resolve_item_query_params,
-    sync_default_source_pack,
     source_content_stats,
     source_summary_stats,
     source_to_out,
-    set_setting_value,
 )
-from app.subscriptions import subscribe_source, subscription_to_dict, unsubscribe_source
+from app.services.recommendations import (
+    get_recommendation_profile,
+    record_item_event,
+    patch_recommendation_profile,
+)
+from app.services.source_definitions import (
+    create_source_definition,
+    export_source_pack,
+    import_source_pack,
+    list_source_definitions,
+    patch_source,
+    patch_source_definition,
+    sync_default_source_pack,
+)
+from app.context import DEFAULT_PROFILE_ID
+from app.subscriptions import get_subscription, subscribe_source, subscription_to_dict, unsubscribe_source
 from app.summary import summarize_codex_cli, summarize_openai_compatible
 from app.utils import dumps, loads
 
@@ -150,22 +158,10 @@ def get_item(item_id: str, db: Db):
 
 
 def _set_item_flag(db: Session, item_id: str, field: str, value: bool | None):
-    item = db.get(Item, item_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Item not found")
-    current = getattr(item, field)
-    next_value = (not current) if value is None else value
-    setattr(item, field, next_value)
-    event_type = {
-        "read": "read" if next_value else "unread",
-        "starred": "star" if next_value else "unstar",
-        "hidden": "hide" if next_value else "unhide",
-    }.get(field)
-    if event_type:
-        record_item_event(db, item_id, event_type, commit=False)
-    db.commit()
-    db.refresh(item)
-    return item_to_out(item, db)
+    try:
+        return set_item_flag(db, item_id, field, value)
+    except ItemNotFound as exc:
+        raise HTTPException(status_code=404, detail="Item not found") from exc
 
 
 @app.post("/api/items/{item_id}/read")
@@ -291,7 +287,9 @@ def create_source(payload: SourceDefinitionIn, db: Db):
 def get_subscriptions(db: Db):
     return [
         SourceSubscriptionOut(**subscription_to_dict(subscription))
-        for subscription in db.execute(select(SourceSubscription).where(SourceSubscription.subscribed.is_(True))).scalars()
+        for subscription in db.execute(
+            select(SourceSubscription).where(SourceSubscription.profile_id == DEFAULT_PROFILE_ID, SourceSubscription.subscribed.is_(True))
+        ).scalars()
     ]
 
 
@@ -330,7 +328,7 @@ def update_source(source_id: str, payload: SourcePatch, db: Db):
 def fetch_source_now(source_id: str, db: Db):
     if not db.get(Source, source_id):
         raise HTTPException(status_code=404, detail="Source not found")
-    subscription = db.get(SourceSubscription, source_id)
+    subscription = get_subscription(db, source_id)
     if not subscription or not subscription.subscribed:
         raise HTTPException(status_code=409, detail="Subscribe source before fetching")
     job = queue_job(db, "fetch_source", {"source_id": source_id})

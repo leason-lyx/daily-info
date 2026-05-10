@@ -1,0 +1,39 @@
+services:
+  api:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      API_BASE_URL: http://127.0.0.1:8000
+      HTTP_PROXY: ${DOCKER_HTTP_PROXY:-}
+      HTTPS_PROXY: ${DOCKER_HTTPS_PROXY:-}
+      ALL_PROXY: ${DOCKER_ALL_PROXY:-}
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  worker:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      API_BASE_URL: http://api:8000
+      HTTP_PROXY: ${DOCKER_HTTP_PROXY:-}
+      HTTPS_PROXY: ${DOCKER_HTTPS_PROXY:-}
+      ALL_PROXY: ${DOCKER_ALL_PROXY:-}
+
+  scheduler:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      API_BASE_URL: http://api:8000
+      HTTP_PROXY: ${DOCKER_HTTP_PROXY:-}
+      HTTPS_PROXY: ${DOCKER_HTTPS_PROXY:-}
+      ALL_PROXY: ${DOCKER_ALL_PROXY:-}
+
+  web:
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://127.0.0.1:8000}
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  rsshub:
+    ports:
+      - "127.0.0.1:1200:1200"

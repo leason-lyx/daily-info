@@ -108,6 +108,7 @@ class SourceRuntimeOut(BaseModel):
 
 class SourceSubscriptionOut(BaseModel):
     source_id: str
+    profile_id: str = "default"
     subscribed: bool
     priority_override: int | None = None
     settings_override: dict[str, Any] = Field(default_factory=dict)

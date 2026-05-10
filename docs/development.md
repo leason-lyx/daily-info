@@ -61,12 +61,21 @@ npm run build
 验收测试必须通过 Docker Compose 覆盖本地部署路径：
 
 ```bash
-docker compose up --build -d --force-recreate api worker scheduler web
+docker compose -f docker-compose.yml -f docker-compose.localhost.yml up --build -d --force-recreate api worker scheduler web
 curl -fsS http://127.0.0.1:8000/api/health
 curl -fsS http://127.0.0.1:8000/api/source-definitions
 ```
 
-Compose 默认只把 Web/API 绑定到 `127.0.0.1`。如果需要通过 Tailscale 访问，使用 Tailscale Serve 转发 `443 -> 127.0.0.1:3000` 和 `8000 -> 127.0.0.1:8000`，不要让容器直接抢占 tailnet 地址上的 `8000`。
+`docker-compose.yml` 是普通 bridge network 的 base 配置，不直接发布端口；`docker-compose.localhost.yml` 负责把 Web/API 绑定到 `127.0.0.1`。如果需要通过 Tailscale 访问，使用 Tailscale Serve 转发 `443 -> 127.0.0.1:3000` 和 `8000 -> 127.0.0.1:8000`，不要让容器直接抢占 tailnet 地址上的 `8000`。
+
+localhost override 默认清空容器内的 `HTTP_PROXY`、`HTTPS_PROXY` 和 `ALL_PROXY`，避免宿主机 `.env` 里的 `127.0.0.1` 代理地址在 bridge 容器内指向容器自己。确实需要容器走代理时，显式设置 `DOCKER_HTTP_PROXY`、`DOCKER_HTTPS_PROXY` 和 `DOCKER_ALL_PROXY`；override 已提供 `host.docker.internal` 的 `host-gateway` 映射，便于连接监听在宿主机可达地址上的代理。
+
+本轮 schema 重构允许重建本地 SQLite 数据。需要重置 Docker volume 时：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.localhost.yml down -v
+docker compose -f docker-compose.yml -f docker-compose.localhost.yml up --build -d api worker scheduler web
+```
 
 涉及 UI 或功能行为的改动，还需要在浏览器中验证受影响页面。
 

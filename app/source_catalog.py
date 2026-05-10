@@ -205,6 +205,9 @@ def apply_definition(source: Source, definition: SourceDefinitionIn, catalog_fil
     source.platform = definition.platform
     source.homepage_url = definition.homepage
     source.is_builtin = builtin
+    source.catalog_origin = "builtin" if builtin else "custom"
+    source.catalog_status = "active"
+    source.catalog_version = int(getattr(source, "catalog_version", 1) or 1)
     source.group = definition.group
     source.priority = definition.priority
     source.poll_interval = definition.fetch.interval_seconds

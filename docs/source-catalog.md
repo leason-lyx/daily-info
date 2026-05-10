@@ -16,9 +16,9 @@ Source Catalog 是 Daily Info 的核心配置资产。它把“系统知道有�
 config/sources/
 ```
 
-每个 YAML 文件包含一组 source definitions。应用启动时会同步这些定义到数据库。同步不会把未订阅 source 自动加入默认 feed。
+每个 YAML 文件包含一组只读内置 source definitions。应用启动时会把这些 seed 同步到数据库。同步不会把未订阅 source 自动加入默认 feed。
 
-`/sources` 页面可以编辑低风险 source 配置，并展示最近抓取时间、最新内容发布时间和本次抓取新增数量。保存时后端会先更新对应 YAML 文件，再把同一份 definition 同步到数据库，避免“网页显示值”和“下次启动同步值”分裂。网页新建的 custom source 会写入 `config/sources/custom.yaml`。
+运行时 catalog 以数据库为准：`/sources` 页面编辑或新建 source 时，后端只更新数据库中的 definition，不会修改仓库里的 `config/sources/*.yaml`。内置 YAML 继续作为可审查、可版本管理的 seed；用户自定义和覆盖配置保存在数据库。需要把数据库中的 catalog 带回 YAML 时，使用 `/api/sources/export` 导出。
 
 `Personal Posts` 分组用于单人更新源，既可以包含社交媒体账号，也可以包含个人博客。有官方 RSS 或 Atom 的个人博客优先使用 `feed` adapter；X/Twitter 账号默认使用 RSSHub route。
 
@@ -145,4 +145,4 @@ source 优先级使用“数字越小越重要”的规则：P0 为 0-24，P1 �
 - 在 `/sources` 里 preview。
 - 订阅后手动 fetch 一次。
 - 到 `/health` 查看最近 run、错误和全文覆盖情况。
-- 如果从网页修改 source 配置，确认对应 `config/sources/*.yaml` 已更新。
+- 如果需要版本化运行时修改，使用导出 API 生成 YAML 后再人工审查合并。

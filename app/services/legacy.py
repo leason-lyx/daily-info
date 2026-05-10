@@ -4,6 +4,7 @@ import hashlib
 import math
 from pathlib import Path
 import re
+import sys
 from typing import Any
 from uuid import uuid4
 
@@ -15,9 +16,11 @@ from sqlalchemy.orm import Session, selectinload
 from app.catalog import DEFAULT_SOURCE_PACK_PATH
 from app.config import Settings, get_settings
 from app.fulltext import extract_generic_article, strip_html
-from app.models import ExternalTrendSignal, FeedPreset, Fulltext, Item, ItemEmbedding, ItemRecommendationScore, ItemSource, Job, JobStatus, LLMProvider, LLMUsageEvent, RawEntry, RecommendationRun, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, UserItemEvent, UserPreference, utcnow
+from app.job_queue import enqueue_embed_item, enqueue_summarize_item
+from app.context import DEFAULT_PROFILE_ID, ProfileContext
+from app.models import ExternalTrendSignal, FeedPreset, Fulltext, Item, ItemEmbedding, ItemRecommendationScore, ItemSource, Job, JobStatus, LLMProvider, LLMUsageEvent, RawEntry, RecommendationRun, Setting, Source, SourceAttempt, SourceRun, SourceRuntime, SourceSubscription, Summary, SummaryStatus, UserItemEvent, UserItemState, UserPreference, utcnow
 from app.schemas import ItemOut, SourceAttemptIn, SourceAttemptOut, SourceDefinitionIn, SourceDefinitionOut, SourceDefinitionPatch, SourceOut, SourcePatch, SourceRuntimeOut, SourceIn
-from app.source_catalog import append_source_definition_to_catalog, definition_from_source, sync_source_catalog, update_source_definition_in_catalog, upsert_source_definition
+from app.source_catalog import apply_source_definition_patch, definition_from_source, sync_source_catalog, upsert_source_definition
 from app.subscriptions import subscribed_source_ids
 from app.summary import generate_tags_codex_cli, generate_tags_openai_compatible
 from app.tags import merge_tags, normalize_tagging_config, sanitize_tags
@@ -25,8 +28,8 @@ from app.utils import canonicalize_url, dedupe_key_from_parts, dumps, extract_en
 
 
 LLM_TAG_MAX_PER_FETCH = 20
-FEED_PRESETS_PATH = Path(__file__).resolve().parent.parent / "config" / "feed-presets.yaml"
-RECOMMENDATION_PROFILE_ID = "default"
+FEED_PRESETS_PATH = Path(__file__).resolve().parents[2] / "config" / "feed-presets.yaml"
+RECOMMENDATION_PROFILE_ID = DEFAULT_PROFILE_ID
 RECOMMENDATION_MODEL_VERSION = "hybrid-v1"
 RECOMMENDATION_EMBEDDING_MODEL = "local-hash-v1"
 RECOMMENDATION_SCORE_TTL_MINUTES = 45
@@ -51,6 +54,29 @@ class TaggingResult:
     tags: list[str]
     generated: bool = False
     attempted: bool = False
+
+
+@dataclass(frozen=True)
+class WorkIntent:
+    kind: str
+    payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class IngestResult:
+    raw_count: int
+    item_count: int
+    fulltext_success_count: int
+    touched_item_ids: set[str]
+    work_intents: list[WorkIntent]
+
+    def __iter__(self):
+        yield self.raw_count
+        yield self.item_count
+        yield self.fulltext_success_count
+
+    def __getitem__(self, index: int) -> int:
+        return (self.raw_count, self.item_count, self.fulltext_success_count)[index]
 
 
 def effective_priority(source: Source) -> int:
@@ -350,8 +376,34 @@ def latest_ai_summary(db: Session | None, item_id: str) -> dict[str, Any] | None
     return data if isinstance(data, dict) else None
 
 
+def get_user_item_state(db: Session, item_id: str, profile_id: str = RECOMMENDATION_PROFILE_ID) -> UserItemState | None:
+    return db.execute(
+        select(UserItemState).where(UserItemState.profile_id == profile_id, UserItemState.item_id == item_id).limit(1)
+    ).scalar_one_or_none()
+
+
+def ensure_user_item_state(db: Session, item_id: str, profile_id: str = RECOMMENDATION_PROFILE_ID) -> UserItemState:
+    state = get_user_item_state(db, item_id, profile_id)
+    if state:
+        return state
+    state = UserItemState(profile_id=profile_id, item_id=item_id)
+    db.add(state)
+    db.flush()
+    return state
+
+
+def item_state_flags(db: Session | None, item: Item, profile_id: str = RECOMMENDATION_PROFILE_ID) -> dict[str, bool]:
+    state = get_user_item_state(db, item.id, profile_id) if db else None
+    return {
+        "read": bool(state.read if state else item.read),
+        "starred": bool(state.starred if state else item.starred),
+        "hidden": bool(state.hidden if state else item.hidden),
+    }
+
+
 def item_to_out(item: Item, db: Session | None = None) -> ItemOut:
     item_sources = item_sources_for_item(db, item) if db else []
+    state = item_state_flags(db, item)
     return ItemOut(
         id=item.id,
         source_id=item.source_id,
@@ -368,9 +420,9 @@ def item_to_out(item: Item, db: Session | None = None) -> ItemOut:
         ai_summary=latest_ai_summary(db, item.id),
         tags=loads(item.tags, []),
         entities=loads(item.entities, []),
-        read=item.read,
-        starred=item.starred,
-        hidden=item.hidden,
+        read=state["read"],
+        starred=state["starred"],
+        hidden=state["hidden"],
         summary_status=item.summary_status,
         recommendation_score=getattr(item, "_recommendation_score", None),
         recommendation_reasons=getattr(item, "_recommendation_reasons", []),
@@ -998,10 +1050,9 @@ def list_source_definitions(db: Session) -> list[SourceDefinitionOut]:
 def create_source_definition(db: Session, definition: SourceDefinitionIn, subscribe: bool = True) -> SourceDefinitionOut:
     if db.get(Source, definition.id):
         raise ValueError("Source id already exists")
-    catalog_file = append_source_definition_to_catalog(definition)
-    source = upsert_source_definition(db, definition, catalog_file=catalog_file, builtin=False)
+    source = upsert_source_definition(db, definition, catalog_file="db", builtin=False)
     if subscribe:
-        db.add(SourceSubscription(source_id=source.id, subscribed=True))
+        db.add(SourceSubscription(source_id=source.id, profile_id=RECOMMENDATION_PROFILE_ID, subscribed=True))
     db.commit()
     db.refresh(source)
     return source_definition_to_out(source)
@@ -1009,30 +1060,42 @@ def create_source_definition(db: Session, definition: SourceDefinitionIn, subscr
 
 def patch_source_definition(db: Session, source: Source, patch: SourceDefinitionPatch) -> SourceDefinitionOut:
     current_definition = definition_from_source(source)
-    updated_definition, catalog_file = update_source_definition_in_catalog(
-        source.id,
-        patch,
-        catalog_file=source.catalog_file,
-        current_definition=current_definition,
-    )
-    upsert_source_definition(db, updated_definition, catalog_file=catalog_file, builtin=source.is_builtin)
+    updated_definition = apply_source_definition_patch(current_definition, patch)
+    upsert_source_definition(db, updated_definition, catalog_file="db", builtin=False)
     db.commit()
     db.refresh(source)
     return source_definition_to_out(source)
 
 
-def queue_job(db: Session, job_type: str, payload: dict[str, Any], max_attempts: int = 3) -> Job:
+def queue_job(
+    db: Session,
+    job_type: str,
+    payload: dict[str, Any],
+    max_attempts: int = 3,
+    *,
+    idempotency_key: str = "",
+    queue: str = "default",
+    priority: int = 100,
+) -> Job:
+    rendered_payload = dumps(payload)
     existing = db.execute(
         select(Job).where(
             Job.type == job_type,
-            Job.payload == dumps(payload),
+            Job.idempotency_key == idempotency_key if idempotency_key else Job.payload == rendered_payload,
             Job.status.in_(["queued", "running", "retrying"]),
         )
     ).scalar_one_or_none()
     if existing:
         setattr(existing, "_queue_created", False)
         return existing
-    job = Job(type=job_type, payload=dumps(payload), max_attempts=max_attempts)
+    job = Job(
+        type=job_type,
+        payload=rendered_payload,
+        max_attempts=max_attempts,
+        idempotency_key=idempotency_key,
+        queue=queue,
+        priority=priority,
+    )
     db.add(job)
     db.commit()
     db.refresh(job)
@@ -1103,7 +1166,11 @@ def queue_auto_summaries(db: Session, settings: Settings, source_id: str | None 
     source_stmt = (
         select(Source)
         .join(SourceSubscription, SourceSubscription.source_id == Source.id)
-        .where(Source.auto_summary_enabled.is_(True), SourceSubscription.subscribed.is_(True))
+        .where(
+            Source.auto_summary_enabled.is_(True),
+            SourceSubscription.profile_id == RECOMMENDATION_PROFILE_ID,
+            SourceSubscription.subscribed.is_(True),
+        )
     )
     if source_id:
         source_stmt = source_stmt.where(Source.id == source_id)
@@ -1135,7 +1202,7 @@ def queue_auto_summaries(db: Session, settings: Settings, source_id: str | None 
             if not item.raw_text.strip():
                 continue
             item.summary_status = SummaryStatus.pending.value
-            queue_job(db, "summarize_item", {"item_id": item.id})
+            enqueue_summarize_item(db, item.id)
             active_item_ids.add(item.id)
             queued += 1
     if queued:
@@ -1328,11 +1395,11 @@ def query_items(
     if summary_status:
         filters.append(Item.summary_status == summary_status)
     if read is not None:
-        filters.append(Item.read == read)
+        filters.append(_item_state_filter("read", read))
     if starred is not None:
-        filters.append(Item.starred == starred)
+        filters.append(_item_state_filter("starred", starred))
     if hidden is not None:
-        filters.append(Item.hidden == hidden)
+        filters.append(_item_state_filter("hidden", hidden))
     if since:
         days = {"today": 1, "3d": 3, "7d": 7}.get(since)
         if days:
@@ -1347,7 +1414,7 @@ def query_items(
                 Item.published_at >= recent_cutoff,
                 and_(Item.published_at.is_(None), Item.created_at >= recent_cutoff),
                 and_(
-                    Item.read.is_(False),
+                    _item_state_filter("read", False),
                     _item_has_priority([(0, 74)]),
                     or_(Item.published_at >= extended_cutoff, and_(Item.published_at.is_(None), Item.created_at >= extended_cutoff)),
                 ),
@@ -1411,6 +1478,16 @@ def _item_has_source(source_ids: list[str]) -> Any:
     return select(ItemSource.id).where(ItemSource.item_id == Item.id, ItemSource.source_id.in_(source_ids)).exists()
 
 
+def _item_state_filter(field: str, expected: bool, profile_id: str = RECOMMENDATION_PROFILE_ID) -> Any:
+    column = getattr(UserItemState, field)
+    exists = (
+        select(UserItemState.id)
+        .where(UserItemState.profile_id == profile_id, UserItemState.item_id == Item.id, column.is_(True))
+        .exists()
+    )
+    return exists if expected else ~exists
+
+
 def _item_has_priority(ranges: list[tuple[int, int | None]]) -> Any:
     priority_value = func.coalesce(SourceSubscription.priority_override, Source.priority)
     range_filters = []
@@ -1422,7 +1499,10 @@ def _item_has_priority(ranges: list[tuple[int, int | None]]) -> Any:
     return (
         select(ItemSource.id)
         .join(Source, Source.id == ItemSource.source_id)
-        .outerjoin(SourceSubscription, SourceSubscription.source_id == Source.id)
+        .outerjoin(
+            SourceSubscription,
+            and_(SourceSubscription.source_id == Source.id, SourceSubscription.profile_id == RECOMMENDATION_PROFILE_ID),
+        )
         .where(ItemSource.item_id == Item.id, or_(*range_filters))
         .exists()
     )
@@ -1440,16 +1520,17 @@ def record_item_event(
     source_id: str = "",
     metadata: dict[str, Any] | None = None,
     *,
+    profile_id: str = RECOMMENDATION_PROFILE_ID,
     commit: bool = True,
 ) -> dict[str, Any]:
     item = db.get(Item, item_id)
     if not item:
         raise KeyError(item_id)
-    event = UserItemEvent(item_id=item_id, event_type=event_type, source_id=source_id or "", metadata_json=dumps(metadata or {}))
+    event = UserItemEvent(profile_id=profile_id, item_id=item_id, event_type=event_type, source_id=source_id or "", metadata_json=dumps(metadata or {}))
     db.add(event)
     if event_type in {"open", "read", "unread", "star", "unstar", "hide", "unhide", "more_like_this", "less_like_this", "dismiss"}:
-        _apply_event_to_implicit_profile(db, item, event_type)
-        _expire_recommendation_scores(db, profile_id=RECOMMENDATION_PROFILE_ID)
+        _apply_event_to_implicit_profile(db, item, event_type, profile_id)
+        _expire_recommendation_scores(db, profile_id=profile_id)
     else:
         _expire_recommendation_scores(db, item_id=item_id)
     if commit:
@@ -1521,7 +1602,10 @@ def _item_source_priority_rows(db: Session, item: Item) -> list[dict[str, Any]]:
     rows = db.execute(
         select(ItemSource, Source, SourceSubscription)
         .join(Source, Source.id == ItemSource.source_id)
-        .outerjoin(SourceSubscription, SourceSubscription.source_id == Source.id)
+        .outerjoin(
+            SourceSubscription,
+            and_(SourceSubscription.source_id == Source.id, SourceSubscription.profile_id == RECOMMENDATION_PROFILE_ID),
+        )
         .where(ItemSource.item_id == item.id)
     ).all()
     return [
@@ -1656,12 +1740,15 @@ def _empty_profile_weights() -> dict[str, dict[str, float]]:
     }
 
 
-def _event_preference_profile(db: Session) -> dict[str, dict[str, float]]:
+def _event_preference_profile(db: Session, profile_id: str = RECOMMENDATION_PROFILE_ID) -> dict[str, dict[str, float]]:
     profile = _empty_profile_weights()
     rows = db.execute(
         select(UserItemEvent, Item)
         .join(Item, Item.id == UserItemEvent.item_id)
-        .where(UserItemEvent.event_type.in_(["open", "read", "star", "hide", "more_like_this", "less_like_this", "dismiss"]))
+        .where(
+            UserItemEvent.profile_id == profile_id,
+            UserItemEvent.event_type.in_(["open", "read", "star", "hide", "more_like_this", "less_like_this", "dismiss"]),
+        )
         .order_by(UserItemEvent.created_at.desc(), UserItemEvent.id.desc())
         .limit(500)
     ).all()
@@ -1685,8 +1772,8 @@ def _event_preference_profile(db: Session) -> dict[str, dict[str, float]]:
     return profile
 
 
-def _apply_event_to_implicit_profile(db: Session, item: Item, event_type: str) -> None:
-    row = _ensure_user_preference(db)
+def _apply_event_to_implicit_profile(db: Session, item: Item, event_type: str, profile_id: str = RECOMMENDATION_PROFILE_ID) -> None:
+    row = _ensure_user_preference(db, profile_id)
     implicit = loads(row.implicit_json, {})
     weights = {
         "star": 4.0,
@@ -1825,15 +1912,20 @@ def _trend_breakthrough_score(db: Session, item: Item, profile: dict[str, dict[s
 def _interaction_penalty(db: Session, item: Item) -> tuple[float, list[str]]:
     reasons = []
     penalty = 0.0
-    if item.hidden:
+    state = item_state_flags(db, item)
+    if state["hidden"]:
         return -1000.0, ["hidden"]
-    if item.read:
+    if state["read"]:
         penalty -= 3.0
         reasons.append("already read")
     event_counts = dict(
         db.execute(
             select(UserItemEvent.event_type, func.count(UserItemEvent.id))
-            .where(UserItemEvent.item_id == item.id, UserItemEvent.event_type.in_(["open", "dismiss", "less_like_this"]))
+            .where(
+                UserItemEvent.profile_id == RECOMMENDATION_PROFILE_ID,
+                UserItemEvent.item_id == item.id,
+                UserItemEvent.event_type.in_(["open", "dismiss", "less_like_this"]),
+            )
             .group_by(UserItemEvent.event_type)
         ).all()
     )
@@ -1998,7 +2090,7 @@ def score_recommendations(db: Session, profile_id: str = RECOMMENDATION_PROFILE_
 
 def build_recommendation_profile(db: Session, profile_id: str = RECOMMENDATION_PROFILE_ID) -> dict[str, Any]:
     row = _ensure_user_preference(db, profile_id)
-    event_profile = _event_preference_profile(db)
+    event_profile = _event_preference_profile(db, profile_id)
     implicit = loads(row.implicit_json, {})
     for bucket, weights in event_profile.items():
         if bucket in {"excluded_terms", "trend_providers", "weights"}:
@@ -2161,13 +2253,13 @@ def _recommendation_candidates(db: Session, limit: int) -> list[Item]:
     stmt = (
         select(Item)
         .where(
-            Item.hidden.is_(False),
+            _item_state_filter("hidden", False),
             _item_has_source(subscribed_ids),
             or_(
                 Item.published_at >= recent_cutoff,
                 and_(Item.published_at.is_(None), Item.created_at >= recent_cutoff),
                 and_(
-                    Item.read.is_(False),
+                    _item_state_filter("read", False),
                     important,
                     or_(Item.published_at >= extended_cutoff, and_(Item.published_at.is_(None), Item.created_at >= extended_cutoff)),
                 ),
@@ -2204,7 +2296,7 @@ def _dedupe_values(values: Any) -> list[str]:
     return result
 
 
-async def persist_entries(db: Session, source: Source, entries: list[Any], settings: Settings) -> tuple[int, int, int]:
+async def persist_entries(db: Session, source: Source, entries: list[Any], settings: Settings) -> IngestResult:
     include = loads(source.include_keywords, [])
     exclude = loads(source.exclude_keywords, [])
     default_tags = sanitize_tags(loads(source.default_tags, []))
@@ -2225,6 +2317,7 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
     min_feed_fulltext_chars = int(fulltext_config.get("min_feed_chars", fulltext_config.get("min_feed_fulltext_chars", 1200)) or 1200)
     llm_tag_attempts = 0
     touched_item_ids: set[str] = set()
+    work_intents: list[WorkIntent] = []
     for entry in entries:
         text_for_filter = f"{entry.title}\n{entry.summary}\n{entry.content}"
         if not text_matches(text_for_filter, include, exclude):
@@ -2304,21 +2397,19 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
                 if existing_fulltext.text:
                     item.raw_text = existing_fulltext.text
                 fulltext_success += 1
-                continue
-            if fulltext_limit and fulltext_attempts >= fulltext_limit:
-                continue
-            fulltext_attempts += 1
-            item_id = item.id
-            item_url = item.url
-            db.commit()
-            text, error = await extract_generic_article(item_url)
-            item = db.get(Item, item_id)
-            if not item:
-                continue
-            db.add(Fulltext(item_id=item.id, extractor="generic_article", status="failed" if error else "succeeded", text=text, error_message=error))
-            if text:
-                item.raw_text = text
-                fulltext_success += 1
+            elif not fulltext_limit or fulltext_attempts < fulltext_limit:
+                fulltext_attempts += 1
+                item_id = item.id
+                item_url = item.url
+                db.commit()
+                text, error = await extract_generic_article(item_url)
+                item = db.get(Item, item_id)
+                if not item:
+                    continue
+                db.add(Fulltext(item_id=item.id, extractor="generic_article", status="failed" if error else "succeeded", text=text, error_message=error))
+                if text:
+                    item.raw_text = text
+                    fulltext_success += 1
         elif raw_text:
             existing_fulltext = db.execute(
                 select(Fulltext.id).where(Fulltext.item_id == item.id, Fulltext.extractor == "feed_field", Fulltext.status == "succeeded").limit(1)
@@ -2351,11 +2442,15 @@ async def persist_entries(db: Session, source: Source, entries: list[Any], setti
         if item.id:
             touched_item_ids.add(item.id)
         if _prepare_auto_summary_item(db, source, item, settings):
-            queue_job(db, "summarize_item", {"item_id": item.id})
+            work_intents.append(WorkIntent("summarize_item", {"item_id": item.id}))
     db.commit()
+    for intent in work_intents:
+        if intent.kind == "summarize_item":
+            enqueue_summarize_item(db, intent.payload["item_id"])
     for item_id in touched_item_ids:
-        queue_job(db, "embed_item", {"item_id": item_id}, max_attempts=2)
-    return raw_count, item_count, fulltext_success
+        work_intents.append(WorkIntent("embed_item", {"item_id": item_id}))
+        enqueue_embed_item(db, item_id)
+    return IngestResult(raw_count, item_count, fulltext_success, touched_item_ids, work_intents)
 
 
 def _tags_from_available_values(default_tags: list[str], entry_tags: list[str], tagging: dict[str, Any], generated_tags: list[str]) -> list[str]:
@@ -2446,7 +2541,8 @@ async def _generate_item_tags(db: Session, item: Item, settings: Settings, max_t
                 providers = [(None, settings)]
             for provider, provider_settings in providers:
                 try:
-                    result = await generate_tags_openai_compatible(item, provider_settings, max_tags)
+                    generator = getattr(sys.modules.get("app.services"), "generate_tags_openai_compatible", generate_tags_openai_compatible)
+                    result = await generator(item, provider_settings, max_tags)
                     _record_llm_usage_event(db, item, "tag_generation", "openai_compatible", provider_settings.llm_model_name or "", SummaryStatus.ready.value, result)
                     if provider:
                         provider.last_error = ""

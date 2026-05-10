@@ -4,6 +4,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import yaml
+
 
 def run_python(script: str, database_url: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
@@ -25,16 +27,25 @@ def test_docker_context_keeps_source_pack_and_excludes_env_secrets() -> None:
     root = Path(__file__).resolve().parents[1]
     dockerfile = (root / "Dockerfile.api").read_text(encoding="utf-8")
     dockerignore = (root / ".dockerignore").read_text(encoding="utf-8")
-    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+    compose = yaml.safe_load((root / "docker-compose.yml").read_text(encoding="utf-8"))
+    localhost_compose = yaml.safe_load((root / "docker-compose.localhost.yml").read_text(encoding="utf-8"))
 
     assert "COPY config ./config" in dockerfile
     assert "config" not in {line.strip().strip("/") for line in dockerignore.splitlines() if line.strip()}
     assert ".env.*" in dockerignore
     assert "!.env.example" in dockerignore
     assert "!.env.local.example" in dockerignore
-    assert "./config/feed-presets.yaml:/app/config/feed-presets.yaml:ro" in compose
-    assert compose.count("DATABASE_URL: ${DATABASE_URL:-sqlite:////data/daily-info.db}") >= 3
-    assert '"127.0.0.1:1200:1200"' in compose
+    api_volumes = compose["services"]["api"]["volumes"]
+    assert "./config/sources:/app/config/sources:ro" in api_volumes
+    assert "./config/feed-presets.yaml:/app/config/feed-presets.yaml:ro" in api_volumes
+    assert "network_mode" not in compose["services"]["api"]
+    assert compose["services"]["api"]["environment"]["DATABASE_URL"] == "${DATABASE_URL:-sqlite:////data/daily-info.db}"
+    assert compose["services"]["web"]["environment"]["NEXT_PUBLIC_API_BASE_URL"] == "${NEXT_PUBLIC_API_BASE_URL:-http://api:8000}"
+    assert localhost_compose["services"]["api"]["ports"] == ["127.0.0.1:8000:8000"]
+    assert localhost_compose["services"]["api"]["extra_hosts"] == ["host.docker.internal:host-gateway"]
+    assert localhost_compose["services"]["api"]["environment"]["HTTP_PROXY"] == "${DOCKER_HTTP_PROXY:-}"
+    assert localhost_compose["services"]["web"]["ports"] == ["127.0.0.1:3000:3000"]
+    assert localhost_compose["services"]["rsshub"]["ports"] == ["127.0.0.1:1200:1200"]
 
 
 def test_api_smoke_uses_temp_database(tmp_path: Path) -> None:
@@ -1464,7 +1475,7 @@ def test_source_definitions_expose_latest_item_freshness(tmp_path: Path) -> None
     assert result.stdout.strip() == "ok"
 
 
-def test_source_definition_patch_writes_yaml_and_syncs_database(tmp_path: Path) -> None:
+def test_source_definition_patch_writes_db_without_mutating_builtin_yaml(tmp_path: Path) -> None:
     catalog_dir = tmp_path / "catalog"
     source_yaml = """
 schema_version: 1
@@ -1509,6 +1520,7 @@ sources:
         source_catalog.SOURCE_CATALOG_DIR.mkdir(parents=True, exist_ok=True)
         source_file = source_catalog.SOURCE_CATALOG_DIR / "test.yaml"
         source_file.write_text({source_yaml!r}, encoding="utf-8")
+        original_yaml = source_file.read_text(encoding="utf-8")
 
         from app.api import app
         from app.db import SessionLocal
@@ -1539,14 +1551,14 @@ sources:
             row = next(source for source in refreshed.json() if source["id"] == "editable")
             assert row["summary"] == {{"auto": True, "window_days": 3}}
 
+        assert source_file.read_text(encoding="utf-8") == original_yaml
         payload = yaml.safe_load(source_file.read_text(encoding="utf-8"))
         raw = payload["sources"][0]
-        assert raw["summary"] == {{"auto": True, "window_days": 3}}
-        assert raw["fetch"]["interval_seconds"] == 7200
-        assert raw["fulltext"]["mode"] == "feed_then_detail"
-        assert raw["tagging"] == {{"mode": "llm", "max_tags": 6}}
-        assert raw["tags"] == ["new", "ai"]
-        assert raw["filters"] == {{"include_keywords": ["research"], "exclude_keywords": ["sponsored"]}}
+        assert raw["summary"] == {{"auto": False, "window_days": 7}}
+        assert raw["fetch"]["interval_seconds"] == 3600
+        assert raw["fulltext"]["mode"] == "feed_only"
+        assert raw["tagging"] == {{"mode": "default", "max_tags": 5}}
+        assert raw["tags"] == ["old"]
 
         with SessionLocal() as db:
             source = db.get(Source, "editable")
@@ -1558,7 +1570,8 @@ sources:
             assert source.language_hint == "zh-CN"
             assert loads(source.spec_json, {{}})["summary"] == {{"auto": True, "window_days": 3}}
             assert source.spec_hash
-            assert source.catalog_file == "test.yaml"
+            assert source.catalog_file == "db"
+            assert source.catalog_origin == "custom"
         print("ok")
         """,
         sqlite_url(tmp_path / "source-definition-patch.db"),
@@ -1628,13 +1641,12 @@ sources:
     assert result.stdout.strip() == "ok"
 
 
-def test_create_source_definition_writes_custom_yaml(tmp_path: Path) -> None:
+def test_create_source_definition_writes_db_catalog_without_custom_yaml(tmp_path: Path) -> None:
     catalog_dir = tmp_path / "catalog"
     result = run_python(
         f"""
         from pathlib import Path
 
-        import yaml
         from fastapi.testclient import TestClient
 
         import app.source_catalog as source_catalog
@@ -1668,17 +1680,15 @@ def test_create_source_definition_writes_custom_yaml(tmp_path: Path) -> None:
         with TestClient(app) as client:
             response = client.post("/api/source-definitions", json=payload)
             assert response.status_code == 200, response.text
-            assert response.json()["catalog_file"] == "custom.yaml"
+            assert response.json()["catalog_file"] == "db"
 
         custom_file = source_catalog.SOURCE_CATALOG_DIR / "custom.yaml"
-        data = yaml.safe_load(custom_file.read_text(encoding="utf-8"))
-        assert data["schema_version"] == 1
-        assert [source["id"] for source in data["sources"]] == ["custom-web"]
-        assert data["sources"][0]["summary"] == {{"auto": True, "window_days": 5}}
+        assert not custom_file.exists()
 
         with SessionLocal() as db:
             source = db.get(Source, "custom-web")
-            assert source.catalog_file == "custom.yaml"
+            assert source.catalog_file == "db"
+            assert source.catalog_origin == "custom"
             subscription = db.get(SourceSubscription, "custom-web")
             assert subscription and subscription.subscribed
         print("ok")
