@@ -47,7 +47,7 @@ def test_docker_context_keeps_source_pack_and_excludes_env_secrets() -> None:
         assert "ports" not in service
         assert service["environment"]["HTTP_PROXY"] == "${HTTP_PROXY:-}"
     assert localhost_compose["services"]["api"]["command"] == ["uvicorn", "app.api:app", "--host", "127.0.0.1", "--port", "8000"]
-    assert localhost_compose["services"]["web"]["command"] == ["npm", "run", "start", "--", "-H", "127.0.0.1", "-p", "3000"]
+    assert localhost_compose["services"]["web"]["command"] == ["npm", "run", "start", "--", "-H", "0.0.0.0", "-p", "3000"]
     assert localhost_compose["services"]["worker"]["environment"]["API_BASE_URL"] == "http://127.0.0.1:8000"
     assert localhost_compose["services"]["rsshub"]["ports"] == ["127.0.0.1:1200:1200"]
 

@@ -66,7 +66,7 @@ curl -fsS http://127.0.0.1:8000/api/health
 curl -fsS http://127.0.0.1:8000/api/source-definitions
 ```
 
-`docker-compose.yml` 是普通 bridge network 的 base 配置，不直接发布端口；`docker-compose.localhost.yml` 负责把 Web/API 绑定到 `127.0.0.1`。如果需要通过 Tailscale 访问，使用 Tailscale Serve 转发 `443 -> 127.0.0.1:3000` 和 `8000 -> 127.0.0.1:8000`，不要让容器直接抢占 tailnet 地址上的 `8000`。
+`docker-compose.yml` 是普通 bridge network 的 base 配置，不直接发布端口；`docker-compose.localhost.yml` 使用 host network 运行本机部署，其中 Web 监听 `0.0.0.0:3000`，便于通过局域网或 Tailscale 直接访问，API 仍只监听 `127.0.0.1:8000`。如果需要远程访问 API，使用 Tailscale Serve 转发 `8000 -> 127.0.0.1:8000`，不要让容器直接抢占 tailnet 地址上的 `8000`。
 
 localhost override 使用 host network 运行本机开发服务，因此容器内的 `127.0.0.1` 与宿主机一致。需要容器走宿主机代理时，在 `.env` 中设置 `HTTP_PROXY`、`HTTPS_PROXY` 和 `ALL_PROXY` 为宿主机可用地址即可，例如 `http://127.0.0.1:7890`；不要在 localhost override 中使用 bridge 网络专用的 `host.docker.internal` 代理地址。
 
