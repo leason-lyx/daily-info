@@ -34,8 +34,8 @@ docker compose -f docker-compose.yml -f docker-compose.localhost.yml up --build 
 
 默认 Compose 栈包含：
 
-- `api`：FastAPI 后端，监听 `127.0.0.1:8000`
-- `web`：Next.js 前端，监听 `127.0.0.1:3000`
+- `api`：FastAPI 后端，发布到 `127.0.0.1:8000`
+- `web`：Next.js 前端，发布到 `127.0.0.1:3000`
 - `worker`：后台任务执行器
 - `scheduler`：周期性抓取与摘要调度器
 
