@@ -54,7 +54,7 @@ config/sources/
 - `feed`：标准 RSS/Atom。
 - `rsshub`：RSSHub route 或 RSSHub URL；X/Twitter 用户时间线可使用 [`/twitter/user/:id/:routeParams?`](https://docs.rsshub.app/routes/popular)，例如 `includeRts=0` 排除 retweets。
 - `html_index`：没有 feed 时的 HTML 列表页 fallback。
-- `page_index`：官方列表页解析，提取文章链接和发布时间；适合 RSSHub route 漏项或上游无专用 feed 的 source。
+- `page_index`：官方列表页解析，提取文章链接和发布时间；适合 RSSHub route 漏项、上游无专用 feed，或类似 Alignment Science Blog 这种按年份路径发布的 source。
 
 attempt 可以配置：
 

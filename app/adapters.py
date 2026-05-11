@@ -7,6 +7,7 @@ from urllib.parse import urljoin
 import feedparser
 import httpx
 from bs4 import BeautifulSoup
+from bs4 import Tag
 
 from app.config import Settings
 from app.models import SourceAttempt
@@ -233,14 +234,26 @@ def _drop_trailing_labels(text: str) -> str:
 def _is_article_url(url: str) -> bool:
     if any(segment in url for segment in ["/research/index", "/research/team/", "/careers/", "/safety/"]):
         return False
+    if re.match(r"^https?://alignment\.anthropic\.com/\d{4}/[^/?#]+/?(?:index\.html)?$", url):
+        return True
     return any(segment in url for segment in ["/index/", "/news/", "/research/", "/engineering/", "/features/", "/glasswing", "/81k-interviews"])
+
+
+def _anchor_title_text(anchor: Tag) -> str:
+    for selector in ["h1", "h2", "h3", ".title"]:
+        node = anchor.select_one(selector)
+        if node:
+            title = node.get_text(" ", strip=True)
+            if title:
+                return title
+    return anchor.get_text(" ", strip=True)
 
 
 def _entries_from_html_index(body: str, base_url: str, limit: int) -> list[RawEntryData]:
     soup = BeautifulSoup(body, "html.parser")
     entries: list[RawEntryData] = []
     seen: set[str] = set()
-    for anchor in soup.select("main a[href], article a[href]"):
+    for anchor in soup.select("main a[href], article a[href], .toc a[href]"):
         text = anchor.get_text(" ", strip=True)
         href = anchor.get("href")
         if not text or not href:
@@ -248,7 +261,7 @@ def _entries_from_html_index(body: str, base_url: str, limit: int) -> list[RawEn
         url_abs = urljoin(base_url, href)
         if url_abs in seen or not _is_article_url(url_abs):
             continue
-        title = _clean_index_title(text)
+        title = _clean_index_title(_anchor_title_text(anchor))
         if not title or len(title) < 8:
             continue
         seen.add(url_abs)
