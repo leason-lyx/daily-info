@@ -34,8 +34,8 @@ Open `http://localhost:3000`.
 
 The default Compose stack starts:
 
-- `api`: FastAPI backend on `127.0.0.1:8000`
-- `web`: Next.js frontend on `127.0.0.1:3000`
+- `api`: FastAPI backend published on `127.0.0.1:8000`
+- `web`: Next.js frontend published on `127.0.0.1:3000`
 - `worker`: background job runner
 - `scheduler`: periodic fetch and summary scheduler
 
