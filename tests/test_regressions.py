@@ -1406,6 +1406,51 @@ def test_catalog_sources_are_opt_in_subscriptions(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_source_definitions_expose_active_fetch_job(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from datetime import datetime, timezone
+
+        from app.db import SessionLocal, init_db
+        from app.models import Job, Source, SourceAttempt, SourceSubscription
+        from app.services.core import list_source_definitions
+        from app.utils import dumps
+
+        init_db()
+        with SessionLocal() as db:
+            db.add(Source(id="target", name="Target", content_type="blog", platform="example"))
+            db.flush()
+            db.add_all([
+                SourceAttempt(source_id="target", adapter="feed", url="https://example.com/feed.xml"),
+                SourceSubscription(source_id="target", subscribed=True),
+                Job(
+                    type="fetch_source",
+                    status="queued",
+                    payload=dumps({"source_id": "target"}),
+                    scheduled_at=datetime(2026, 5, 11, 8, tzinfo=timezone.utc),
+                ),
+                Job(
+                    type="fetch_source",
+                    status="succeeded",
+                    payload=dumps({"source_id": "target"}),
+                    scheduled_at=datetime(2026, 5, 11, 7, tzinfo=timezone.utc),
+                    finished_at=datetime(2026, 5, 11, 7, 1, tzinfo=timezone.utc),
+                ),
+            ])
+            db.commit()
+
+            target = {definition.id: definition for definition in list_source_definitions(db)}["target"]
+            assert target.active_job is not None
+            assert target.active_job["type"] == "fetch_source"
+            assert target.active_job["status"] == "queued"
+            assert target.active_job["scheduled_at"] is not None
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "source-definition-active-fetch-job.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_openai_news_uses_full_official_rss_feed(tmp_path: Path) -> None:
     result = run_python(
         """

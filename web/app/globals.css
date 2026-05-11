@@ -1178,6 +1178,11 @@ textarea {
   background: #fffaf0;
 }
 
+.sourceRunStatus.busy {
+  border-color: #9bd8d1;
+  background: #eefbf8;
+}
+
 .sourceRunStatus.bad {
   border-color: #f5b5ad;
   background: #fff6f4;
@@ -1237,6 +1242,10 @@ textarea {
 
 .sourceRunStatus.bad .statusDot {
   background: var(--bad);
+}
+
+.sourceRunStatus.busy .statusDot {
+  background: var(--accent);
 }
 
 .sourceRunState {

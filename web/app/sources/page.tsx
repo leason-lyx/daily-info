@@ -294,9 +294,9 @@ export default function SourcesPage() {
                       <Eye size={16} />
                       {isPending(`${source.id}:preview`) ? "Previewing..." : "Preview"}
                     </button>
-                    <button className="button compact" title="Fetch now" onClick={() => fetchNow(source)} disabled={!source.subscribed || isPending(`${source.id}:fetch`)}>
+                    <button className="button compact" title="Fetch now" onClick={() => fetchNow(source)} disabled={!source.subscribed || isPending(`${source.id}:fetch`) || hasActiveFetchJob(source)}>
                       <Play size={16} />
-                      {isPending(`${source.id}:fetch`) ? "Queueing..." : "Fetch now"}
+                      {isPending(`${source.id}:fetch`) ? "Queueing..." : activeFetchButtonLabel(source) || "Fetch now"}
                     </button>
                     <button className="button compact" title="Configure source" onClick={() => toggleEditor(source)} disabled={isPending(`${source.id}:config`)}>
                       <SlidersHorizontal size={16} />
@@ -519,6 +519,30 @@ function SourceRunStatus({ source }: { source: Source }) {
 }
 
 function latestRunParts(source: Source) {
+  const activeJob = source.active_job;
+  if (activeJob && ["queued", "running", "retrying"].includes(activeJob.status)) {
+    const startedAt = typeof activeJob.started_at === "string" ? activeJob.started_at : "";
+    const scheduledAt = typeof activeJob.scheduled_at === "string" ? activeJob.scheduled_at : "";
+    const jobDate = parseApiDate(startedAt || scheduledAt);
+    const status = typeof activeJob.status === "string" ? activeJob.status : "queued";
+    const detail = status === "running"
+      ? `Attempt ${activeJob.attempts || 1}/${activeJob.max_attempts || 3}`
+      : status === "retrying"
+        ? "Waiting to retry"
+        : "Waiting for worker";
+    return {
+      status,
+      tone: "busy",
+      resultCount: detail,
+      resultNote: "",
+      fetchLabel: jobDate ? relativeTime(jobDate) : "Queued now",
+      fetchTitle: jobDate ? jobDate.toLocaleString() : "Fetch job is queued.",
+      itemLabel: "Fetch pending",
+      itemTitle: "A fetch job is queued or running for this source.",
+      title: `Fetch job #${activeJob.id} is ${status}.`,
+      error: "",
+    };
+  }
   const run = source.latest_run;
   const runtime = source.runtime;
   const itemPublishedAt = parseApiDate(source.latest_item_published_at || "");
@@ -570,6 +594,18 @@ function latestRunParts(source: Source) {
     title: runDate ? runDate.toLocaleString() : "No timestamp recorded.",
     error: status === "failed" ? truncate(errorMessage, 140) : "",
   };
+}
+
+function hasActiveFetchJob(source: Source) {
+  return Boolean(source.active_job && ["queued", "running", "retrying"].includes(source.active_job.status));
+}
+
+function activeFetchButtonLabel(source: Source) {
+  const status = source.active_job?.status;
+  if (status === "queued") return "Queued";
+  if (status === "running") return "Running";
+  if (status === "retrying") return "Retrying";
+  return "";
 }
 
 function parseApiDate(value: string) {

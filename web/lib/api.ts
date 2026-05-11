@@ -21,6 +21,7 @@ export type Source = {
   auth: Record<string, unknown>;
   stability: string;
   runtime?: SourceRuntime | null;
+  active_job?: ActiveJob | null;
   latest_item_published_at?: string | null;
   latest_item_ingested_at?: string | null;
   latest_item_title?: string;
@@ -29,6 +30,19 @@ export type Source = {
   fulltext: Record<string, unknown>;
   content_audit?: Record<string, unknown>;
   latest_run?: LatestRun | null;
+};
+
+export type ActiveJob = {
+  id: number;
+  type: string;
+  status: string;
+  attempts: number;
+  max_attempts: number;
+  scheduled_at?: string | null;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error_code?: string;
+  error_message?: string;
 };
 
 export type SourceFetchAttempt = {

@@ -119,6 +119,7 @@ class SourceDefinitionOut(SourceDefinitionIn):
     effective_priority: int = 100
     priority_tier: str = "p2"
     runtime: SourceRuntimeOut | None = None
+    active_job: dict[str, Any] | None = None
     latest_run: dict[str, Any] | None = None
     latest_item_published_at: datetime | None = None
     latest_item_ingested_at: datetime | None = None
