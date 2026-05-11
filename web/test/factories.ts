@@ -1,0 +1,220 @@
+import type { FeedPreset, Health, Item, RecommendationProfile, Source } from "@/lib/api";
+
+export function source(overrides: Partial<Source> = {}): Source {
+  const id = overrides.id || "arxiv-cs-se";
+  return {
+    id,
+    title: "arXiv CS SE",
+    kind: "paper",
+    platform: "arxiv",
+    homepage: "https://arxiv.org",
+    language: "en",
+    tags: ["paper", "software-engineering"],
+    subscribed: true,
+    effective_priority: 20,
+    priority_tier: "p0",
+    group: "Papers",
+    priority: 20,
+    fetch: {
+      strategy: "first_success",
+      interval_seconds: 3600,
+      attempts: [{ adapter: "feed", url: "https://example.com/feed.xml", timeout_seconds: 20 }],
+    },
+    summary: { auto: true, window_days: 7 },
+    tagging: { mode: "llm", max_tags: 5 },
+    filters: { include_keywords: [], exclude_keywords: [] },
+    auth: {},
+    stability: "builtin",
+    runtime: null,
+    active_job: null,
+    latest_item_published_at: null,
+    latest_item_ingested_at: null,
+    latest_item_title: "",
+    spec_hash: "hash",
+    catalog_file: "config/sources/default.yaml",
+    fulltext: { mode: "feed_only", min_feed_chars: 1200, max_detail_pages_per_run: 20 },
+    content_audit: { status: "ok" },
+    latest_run: {
+      id: 1,
+      status: "succeeded",
+      started_at: "2026-05-10T00:00:00Z",
+      finished_at: "2026-05-10T00:01:00Z",
+      raw_count: 3,
+      item_count: 2,
+      fulltext_success_count: 2,
+    },
+    ...overrides,
+  };
+}
+
+export function item(overrides: Partial<Item> = {}): Item {
+  const id = overrides.id || "item-1";
+  return {
+    id,
+    source_id: "arxiv-cs-se",
+    source_name: "arXiv CS SE",
+    content_type: "paper",
+    platform: "arxiv",
+    title: "Benchmarking Agentic Software Engineering",
+    chinese_title: "智能体软件工程评测",
+    url: "https://example.com/item",
+    authors: ["Ada Lovelace", "Grace Hopper", "Alan Turing", "Barbara Liskov"],
+    published_at: "2026-05-10T08:00:00Z",
+    summary: "A paper about software engineering agents.",
+    raw_text: "Long raw text.",
+    tags: ["agent", "benchmark"],
+    entities: ["Codex"],
+    read: false,
+    starred: false,
+    hidden: false,
+    summary_status: "ready",
+    ai_summary: {
+      one_sentence: "这是一篇关于软件工程智能体评测的论文。",
+      research_question: "如何评测智能体编码能力",
+      method: ["构建任务集", "执行端到端评测"],
+      key_results: ["覆盖核心流程"],
+    },
+    sources: [
+      { source_id: "arxiv-cs-se", source_name: "arXiv CS SE", url: "https://example.com/item", tags: ["paper"] },
+    ],
+    recommendation_score: 8.5,
+    recommendation_reasons: ["matches interests"],
+    ...overrides,
+  };
+}
+
+export function feedPreset(overrides: Partial<FeedPreset> = {}): FeedPreset {
+  return {
+    id: "all",
+    name: "All",
+    description: "Everything subscribed",
+    filter: {},
+    rank: { mode: "latest" },
+    sort_order: 0,
+    is_builtin: true,
+    hidden: false,
+    ...overrides,
+  };
+}
+
+export function recommendationProfile(overrides: Partial<RecommendationProfile> = {}): RecommendationProfile {
+  return {
+    profile_id: "default",
+    interests: ["agents"],
+    excluded_terms: ["crypto"],
+    source_ids: ["arxiv-cs-se"],
+    tags: ["benchmark"],
+    entities: ["OpenAI"],
+    platforms: ["arxiv"],
+    content_types: ["paper"],
+    trend_providers: ["hn"],
+    weights: {},
+    implicit: {},
+    updated_at: "2026-05-10T00:00:00Z",
+    ...overrides,
+  };
+}
+
+export function health(overrides: Partial<Health> = {}): Health {
+  return {
+    ok: true,
+    items_total: 1234,
+    items_24h: 56,
+    jobs: {
+      counts: { queued: 6, running: 1, retrying: 2, failed: 3, succeeded: 9, skipped: 0 },
+      active: Array.from({ length: 7 }, (_, index) => ({
+        id: index + 1,
+        type: "fetch_source",
+        status: index === 0 ? "running" : "queued",
+        attempts: 1,
+        max_attempts: 3,
+        scheduled_at: "2026-05-10T00:00:00Z",
+        started_at: index === 0 ? "2026-05-10T00:01:00Z" : null,
+        finished_at: null,
+        target: { kind: "source", id: `source-${index}`, label: `Source ${index}` },
+      })),
+      recent: [
+        {
+          id: 10,
+          type: "summarize_item",
+          status: "failed",
+          attempts: 3,
+          max_attempts: 3,
+          scheduled_at: "2026-05-10T00:00:00Z",
+          started_at: "2026-05-10T00:01:00Z",
+          finished_at: "2026-05-10T00:03:00Z",
+          error_code: "provider_failed",
+          error_message: "Provider unavailable",
+          target: { kind: "item", id: "item-1", label: "Item 1" },
+        },
+      ],
+    },
+    ai_provider: {
+      type: "openai_compatible",
+      configured: true,
+      available: true,
+      usage: {
+        provider: "openai_compatible",
+        all_time: {
+          requests: 10,
+          success: 9,
+          failed: 1,
+          prompt_tokens: 100,
+          completion_tokens: 50,
+          total_tokens: 150,
+          reasoning_tokens: 0,
+          duration_ms: 1000,
+        },
+        recent_24h: {
+          requests: 2,
+          success: 2,
+          failed: 0,
+          prompt_tokens: 20,
+          completion_tokens: 10,
+          total_tokens: 30,
+          reasoning_tokens: 0,
+          duration_ms: 200,
+        },
+        recent_7d: {
+          requests: 5,
+          success: 5,
+          failed: 0,
+          prompt_tokens: 50,
+          completion_tokens: 25,
+          total_tokens: 75,
+          reasoning_tokens: 0,
+          duration_ms: 500,
+        },
+        by_model: [],
+      },
+    },
+    sources: Array.from({ length: 8 }, (_, index) => ({
+      id: `source-${index}`,
+      name: `Source ${index}`,
+      enabled: true,
+      auto_summary_enabled: true,
+      auto_summary_days: 7,
+      latest_success_at: "2026-05-10T00:00:00Z",
+      raw_count: 5,
+      item_count: 4,
+      fulltext_success_rate: 0.75,
+      summary_ready_count: 3,
+      summary_failed_count: 1,
+      summary_failure_rate: 0.25,
+      consecutive_failures: 0,
+      consecutive_empty: 0,
+      content_audit: { status: "ok" },
+      latest_run: { id: index, status: "succeeded", raw_count: 5, item_count: 4, fulltext_success_count: 3 },
+    })),
+    degraded_sources: [{ id: "bad-source", name: "Bad Source", reason: "consecutive failures" }],
+    recent_errors: Array.from({ length: 4 }, (_, index) => ({
+      source_id: `source-${index}`,
+      title: `Source error ${index}`,
+      error_code: "fetch_failed",
+      error_message: "HTTP 500",
+      finished_at: "2026-05-10T00:00:00Z",
+    })),
+    recent_summary_errors: [{ item_id: "item-1", title: "Summary error", error_message: "LLM timeout" }],
+    ...overrides,
+  };
+}

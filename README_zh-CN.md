@@ -163,8 +163,12 @@ uv run pytest
 ```bash
 cd web
 npm run lint
+npm run test
+npm run coverage
 npm run build
 ```
+
+`npm run test` 会运行 Vitest + Testing Library 前端单测与页面行为测试。`npm run coverage` 会生成覆盖率报告，并执行初始门槛：statements、lines、functions 不低于 75%，branches 不低于 60%。`npm run check` 会串联 lint、test、coverage 和 build。
 
 验收测试建议使用 Docker Compose，这样验证路径和本地部署一致：
 
@@ -172,9 +176,11 @@ npm run build
 docker compose -f docker-compose.yml -f docker-compose.localhost.yml up --build -d --force-recreate api worker scheduler web
 curl -fsS http://127.0.0.1:8000/api/health
 curl -fsS http://127.0.0.1:8000/api/source-definitions
+cd web
+npm run e2e
 ```
 
-如果改动涉及 UI 或 Feed 行为，还需要打开 Docker Compose 启动的前端页面，在浏览器里验证受影响流程。
+`npm run e2e` 默认访问 `http://127.0.0.1:3000`，不会自动启动服务，需要先按上面的 Docker Compose 命令启动。若改动涉及 UI 或 Feed 行为，还需要打开 Docker Compose 启动的前端页面，在浏览器里验证受影响流程。
 
 ## 安全说明
 
