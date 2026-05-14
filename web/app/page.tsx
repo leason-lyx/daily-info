@@ -46,6 +46,7 @@ function FeedView() {
   const [failedQueryKey, setFailedQueryKey] = useState<string | null>(null);
   const [summarizingIds, setSummarizingIds] = useState<Set<string>>(new Set());
   const [feedbackPendingIds, setFeedbackPendingIds] = useState<Set<string>>(new Set());
+  const [feedbackSelections, setFeedbackSelections] = useState<Record<string, "more_like_this" | "less_like_this">>({});
   const [isPending, startTransition] = useTransition();
   const queryKey = searchParams.toString();
   const query = useMemo(() => new URLSearchParams(queryKey), [queryKey]);
@@ -276,6 +277,9 @@ function FeedView() {
         setTotal((value) => Math.max(value - 1, 0));
       }
       await itemsApi.recordItemEvent(item.id, eventType, { preset_id: activePresetId, rank: currentRank || "latest" });
+      if (eventType === "more_like_this" || eventType === "less_like_this") {
+        setFeedbackSelections((current) => ({ ...current, [item.id]: eventType }));
+      }
       setPresetMessage(eventType === "more_like_this" ? "已记录：更多类似内容" : eventType === "less_like_this" ? "已记录：减少类似内容" : "已记录：不感兴趣");
     } catch (err) {
       if (eventType === "dismiss") {
@@ -487,6 +491,7 @@ function FeedView() {
           const shownSources = itemSources.slice(0, 2);
           const hiddenSourceCount = Math.max(itemSources.length - shownSources.length, 0);
           const feedbackPending = feedbackPendingIds.has(item.id);
+          const selectedFeedback = feedbackSelections[item.id];
 
           return (
             <article className="item" key={item.id}>
@@ -597,10 +602,24 @@ function FeedView() {
                 </button>
                 {currentRank === "for_you" ? (
                   <>
-                    <button className="button" type="button" title="推荐更多类似内容" onClick={() => void feedbackAction(item, "more_like_this")} disabled={feedbackPending}>
+                    <button
+                      aria-pressed={selectedFeedback === "more_like_this"}
+                      className={selectedFeedback === "more_like_this" ? "button feedbackButton selected" : "button feedbackButton"}
+                      type="button"
+                      title="推荐更多类似内容"
+                      onClick={() => void feedbackAction(item, "more_like_this")}
+                      disabled={feedbackPending}
+                    >
                       <ThumbsUp size={16} /> 更多类似
                     </button>
-                    <button className="button" type="button" title="减少类似内容" onClick={() => void feedbackAction(item, "less_like_this")} disabled={feedbackPending}>
+                    <button
+                      aria-pressed={selectedFeedback === "less_like_this"}
+                      className={selectedFeedback === "less_like_this" ? "button feedbackButton selected" : "button feedbackButton"}
+                      type="button"
+                      title="减少类似内容"
+                      onClick={() => void feedbackAction(item, "less_like_this")}
+                      disabled={feedbackPending}
+                    >
                       <ThumbsDown size={16} /> 减少类似
                     </button>
                     <button className="button" type="button" title="从本次推荐中移除" onClick={() => void feedbackAction(item, "dismiss")} disabled={feedbackPending}>

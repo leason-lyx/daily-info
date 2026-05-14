@@ -611,6 +611,13 @@ textarea {
   justify-content: flex-start;
 }
 
+.feedbackButton.selected {
+  border-color: var(--accent);
+  background: #e9f8f4;
+  color: var(--accent-strong);
+  box-shadow: inset 0 0 0 1px rgba(15, 118, 110, 0.2);
+}
+
 .button:disabled,
 .iconButton:disabled,
 .sourceSwitch:disabled {
