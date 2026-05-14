@@ -243,7 +243,30 @@ def _unique_preset_id(db: Session, seed: str) -> str:
     return candidate
 
 
-def source_definition_to_out(source: Source, latest_run: SourceRun | None = None, stats: dict[str, Any] | None = None) -> SourceDefinitionOut:
+ACTIVE_JOB_STATUSES = {JobStatus.queued.value, JobStatus.running.value, JobStatus.retrying.value}
+
+
+def job_to_dict(job: Job) -> dict[str, Any]:
+    return {
+        "id": job.id,
+        "type": job.type,
+        "status": job.status,
+        "attempts": job.attempts,
+        "max_attempts": job.max_attempts,
+        "scheduled_at": job.scheduled_at,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+        "error_code": job.error_code,
+        "error_message": job.error_message,
+    }
+
+
+def source_definition_to_out(
+    source: Source,
+    latest_run: SourceRun | None = None,
+    stats: dict[str, Any] | None = None,
+    active_job: Job | None = None,
+) -> SourceDefinitionOut:
     stats = stats or {}
     definition = definition_from_source(source)
     subscription = _profile_subscription(source)
@@ -264,6 +287,7 @@ def source_definition_to_out(source: Source, latest_run: SourceRun | None = None
         )
         if runtime
         else None,
+        active_job=job_to_dict(active_job) if active_job else None,
         latest_run=run_to_dict(latest_run) if latest_run else None,
         latest_item_published_at=stats.get("latest_item_published_at"),
         latest_item_ingested_at=stats.get("latest_item_ingested_at"),
@@ -566,6 +590,24 @@ def latest_runs(db: Session) -> dict[str, SourceRun]:
     return {run.source_id: run for run in rows}
 
 
+def active_fetch_jobs(db: Session) -> dict[str, Job]:
+    rows = (
+        db.execute(
+            select(Job)
+            .where(Job.type == "fetch_source", Job.status.in_(ACTIVE_JOB_STATUSES))
+            .order_by(Job.scheduled_at.desc(), Job.id.desc())
+        )
+        .scalars()
+        .all()
+    )
+    jobs: dict[str, Job] = {}
+    for job in rows:
+        source_id = str(loads(job.payload, {}).get("source_id") or "")
+        if source_id and source_id not in jobs:
+            jobs[source_id] = job
+    return jobs
+
+
 def source_content_stats(db: Session) -> dict[str, dict[str, Any]]:
     assoc = _item_source_assoc_subquery()
     item_rows = db.execute(
@@ -785,6 +827,7 @@ def llm_usage_stats(db: Session) -> dict[str, Any]:
 
 def list_source_definitions(db: Session) -> list[SourceDefinitionOut]:
     runs = latest_runs(db)
+    active_jobs = active_fetch_jobs(db)
     stats = source_content_stats(db)
     sources = (
         db.execute(
@@ -795,7 +838,7 @@ def list_source_definitions(db: Session) -> list[SourceDefinitionOut]:
         .scalars()
         .all()
     )
-    return [source_definition_to_out(source, runs.get(source.id), stats.get(source.id)) for source in sources]
+    return [source_definition_to_out(source, runs.get(source.id), stats.get(source.id), active_jobs.get(source.id)) for source in sources]
 
 
 def create_source_definition(db: Session, definition: SourceDefinitionIn, subscribe: bool = True) -> SourceDefinitionOut:

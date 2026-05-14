@@ -17,7 +17,7 @@ async def extract_generic_article(url: str, timeout: int = 20) -> tuple[str, str
     if response.status_code >= 400:
         return "", f"GET returned {response.status_code}"
     soup = BeautifulSoup(response.text, "html.parser")
-    for selector in ["article", "main", "[role=main]", ".post-content", ".entry-content"]:
+    for selector in ["article", "d-article", "main", "[role=main]", ".post-content", ".entry-content"]:
         node = soup.select_one(selector)
         if node:
             text = re.sub(r"\n{3,}", "\n\n", node.get_text("\n", strip=True)).strip()
@@ -25,4 +25,3 @@ async def extract_generic_article(url: str, timeout: int = 20) -> tuple[str, str
                 return text, ""
     body = soup.body.get_text("\n", strip=True) if soup.body else ""
     return re.sub(r"\n{3,}", "\n\n", body).strip(), ""
-

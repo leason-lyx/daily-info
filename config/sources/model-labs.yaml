@@ -107,6 +107,30 @@ sources:
       window_days: 7
     auth:
       mode: none
+  - id: anthropic-alignment
+    title: Anthropic Alignment Science Blog
+    kind: blog
+    platform: anthropic
+    homepage: https://alignment.anthropic.com/
+    group: Model Labs
+    language: en
+    tags: [anthropic, alignment, safety, research]
+    fetch:
+      strategy: first_success
+      interval_seconds: 3600
+      attempts:
+        - adapter: page_index
+          url: https://alignment.anthropic.com/
+          timeout_seconds: 20
+          limit: 30
+    fulltext:
+      mode: detail_only
+      max_detail_pages_per_run: 20
+    summary:
+      auto: true
+      window_days: 7
+    auth:
+      mode: none
   - id: anthropic-engineering
     title: Anthropic Engineering
     kind: blog

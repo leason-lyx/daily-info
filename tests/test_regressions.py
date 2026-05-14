@@ -10,6 +10,7 @@ import yaml
 def run_python(script: str, database_url: str) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["DATABASE_URL"] = database_url
+    env["LLM_PROVIDER_TYPE"] = "none"
     return subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script)],
         check=True,
@@ -171,6 +172,98 @@ def test_fetch_feed_parses_entry_categories_as_tags(tmp_path: Path) -> None:
         print("ok")
         """,
         sqlite_url(tmp_path / "feed-tags.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_fetch_page_index_parses_anthropic_alignment_cards(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        import httpx
+
+        from app.adapters import fetch_page_index
+
+        index_html = '''<html><body><div class="toc">
+          <a href="2026/teaching-claude-why/" class="note">
+            <h3>Teaching Claude Why</h3>
+            <div class="description">We use agentic misalignment as a case study.</div>
+          </a>
+          <a href="2026/msm/" class="note">
+            <h3>Model Spec Midtraining: Improving How Alignment Training Generalizes</h3>
+            <div class="description">We train AIs to understand the content of their model spec.</div>
+          </a>
+        </div></body></html>'''
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def get(self, url, headers=None):
+                request = httpx.Request("GET", url)
+                if str(url).rstrip("/") == "https://alignment.anthropic.com":
+                    return httpx.Response(200, text=index_html, request=request)
+                title = "Teaching Claude Why" if str(url).endswith("/teaching-claude-why/") else "Model Spec Midtraining: Improving How Alignment Training Generalizes"
+                return httpx.Response(200, text=f"<html><body><d-article><h1>{title}</h1><p>Body</p></d-article></body></html>", request=request)
+
+        with patch("app.adapters.httpx.AsyncClient", FakeAsyncClient):
+            result = asyncio.run(fetch_page_index("https://alignment.anthropic.com/", limit=10))
+
+        assert len(result.entries) == 2
+        assert result.entries[0].title == "Teaching Claude Why"
+        assert result.entries[0].url == "https://alignment.anthropic.com/2026/teaching-claude-why/"
+        assert "agentic misalignment" not in result.entries[0].title
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "anthropic-alignment-page-index.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_extract_generic_article_supports_distill_article_tag(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        import httpx
+
+        from app.fulltext import extract_generic_article
+
+        article_text = " ".join(["Distill article body"] * 30)
+        html = f"<html><body><nav>Navigation noise</nav><d-article><h1>Title</h1><p>{article_text}</p></d-article></body></html>"
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def get(self, url, headers=None):
+                request = httpx.Request("GET", url)
+                return httpx.Response(200, text=html, request=request)
+
+        with patch("app.fulltext.httpx.AsyncClient", FakeAsyncClient):
+            text, error = asyncio.run(extract_generic_article("https://alignment.anthropic.com/2026/example/"))
+
+        assert error == ""
+        assert "Distill article body" in text
+        assert "Navigation noise" not in text
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "distill-fulltext.db"),
     )
     assert result.stdout.strip() == "ok"
 
@@ -1309,6 +1402,51 @@ def test_catalog_sources_are_opt_in_subscriptions(tmp_path: Path) -> None:
         print("ok")
         """,
         sqlite_url(tmp_path / "catalog-subscriptions.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
+def test_source_definitions_expose_active_fetch_job(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        from datetime import datetime, timezone
+
+        from app.db import SessionLocal, init_db
+        from app.models import Job, Source, SourceAttempt, SourceSubscription
+        from app.services.core import list_source_definitions
+        from app.utils import dumps
+
+        init_db()
+        with SessionLocal() as db:
+            db.add(Source(id="target", name="Target", content_type="blog", platform="example"))
+            db.flush()
+            db.add_all([
+                SourceAttempt(source_id="target", adapter="feed", url="https://example.com/feed.xml"),
+                SourceSubscription(source_id="target", subscribed=True),
+                Job(
+                    type="fetch_source",
+                    status="queued",
+                    payload=dumps({"source_id": "target"}),
+                    scheduled_at=datetime(2026, 5, 11, 8, tzinfo=timezone.utc),
+                ),
+                Job(
+                    type="fetch_source",
+                    status="succeeded",
+                    payload=dumps({"source_id": "target"}),
+                    scheduled_at=datetime(2026, 5, 11, 7, tzinfo=timezone.utc),
+                    finished_at=datetime(2026, 5, 11, 7, 1, tzinfo=timezone.utc),
+                ),
+            ])
+            db.commit()
+
+            target = {definition.id: definition for definition in list_source_definitions(db)}["target"]
+            assert target.active_job is not None
+            assert target.active_job["type"] == "fetch_source"
+            assert target.active_job["status"] == "queued"
+            assert target.active_job["scheduled_at"] is not None
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "source-definition-active-fetch-job.db"),
     )
     assert result.stdout.strip() == "ok"
 
