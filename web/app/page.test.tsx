@@ -93,12 +93,21 @@ describe("FeedPage", () => {
     await user.click(screen.getByRole("button", { name: "重新生成摘要" }));
     expect(api.itemsApi.resummarize).toHaveBeenCalledWith("item-1");
 
-    await user.click(screen.getByRole("button", { name: "更多类似" }));
+    const moreButton = screen.getByRole("button", { name: "更多类似" });
+    const lessButton = screen.getByRole("button", { name: "减少类似" });
+    expect(moreButton).toHaveAttribute("aria-pressed", "false");
+    expect(lessButton).toHaveAttribute("aria-pressed", "false");
+
+    await user.click(moreButton);
     await waitFor(() => expect(api.itemsApi.recordItemEvent).toHaveBeenCalledWith("item-1", "more_like_this", { preset_id: "all", rank: "for_you" }));
     expect(await screen.findByText("已记录：更多类似内容")).toBeInTheDocument();
+    expect(moreButton).toHaveAttribute("aria-pressed", "true");
+    expect(lessButton).toHaveAttribute("aria-pressed", "false");
 
-    await user.click(screen.getByRole("button", { name: "减少类似" }));
+    await user.click(lessButton);
     await waitFor(() => expect(api.itemsApi.recordItemEvent).toHaveBeenCalledWith("item-1", "less_like_this", { preset_id: "all", rank: "for_you" }));
+    expect(moreButton).toHaveAttribute("aria-pressed", "false");
+    expect(lessButton).toHaveAttribute("aria-pressed", "true");
 
     await user.click(screen.getByRole("button", { name: "不感兴趣" }));
     await waitFor(() => expect(api.itemsApi.recordItemEvent).toHaveBeenCalledWith("item-1", "dismiss", { preset_id: "all", rank: "for_you" }));
