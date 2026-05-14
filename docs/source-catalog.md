@@ -127,7 +127,7 @@ source 优先级使用“数字越小越重要”的规则：P0 为 0-24，P1 �
 
 `rank=recommended` 保留轻量请求时规则排序；内置 `For You` 预设使用 `rank=for_you`，默认候选窗口是最近 30 天内容，重要源的未读内容可放宽到 90 天。`For You` 优先读取 `ItemRecommendationScore` 缓存，缓存缺失或过期时回退到同一套可解释规则。
 
-`For You` 分数由显式推荐偏好、带时间衰减的行为事件、source 有效优先级、发布时间、内容质量、多来源站内热度和外部趋势信号组成。用户可以在 Settings 里编辑兴趣词、排除词、关注 source id、标签/实体/平台/内容类型和外部热度 provider。Feed 中的“更多类似 / 减少类似 / 不感兴趣”会写入 item event，用于后续画像和排序，并让相关推荐缓存过期。
+`For You` 分数由显式推荐偏好、带时间衰减的行为事件、source 有效优先级、发布时间、内容质量、多来源站内热度和外部趋势信号组成。用户可以在 Settings 里编辑兴趣词、排除词、关注 source id、标签/实体/平台/内容类型和外部热度 provider。Feed 中的点赞/点踩推荐反馈会写入 item event，用于后续画像和排序，并让相关推荐缓存过期。
 
 推荐相关表包括 `user_preferences`、`item_embeddings`、`external_trend_signals`、`item_recommendation_scores` 和 `recommendation_runs`。第一阶段仍按单用户设计，统一使用 `profile_id="default"`；推荐只改变排序和解释，不会自动订阅 source，也不会改变去重后的来源归属。
 

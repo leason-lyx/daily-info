@@ -29,8 +29,9 @@ test.describe("Compose-served UI smoke", () => {
     await page.getByRole("button", { name: "Refresh health" }).click();
     const showAll = page.getByRole("button", { name: /Show all/ }).first();
     if (await showAll.isVisible().catch(() => false)) {
+      const section = showAll.locator("xpath=ancestor::section[1]");
       await showAll.click();
-      await expect(showAll).toHaveAttribute("aria-expanded", "true");
+      await expect(section.getByRole("button", { name: /Show less/ })).toHaveAttribute("aria-expanded", "true");
     }
     await expectNoNextError(page);
   });

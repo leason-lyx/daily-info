@@ -1024,6 +1024,15 @@ textarea {
   gap: 8px;
 }
 
+.feedbackGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 38px;
+  border-left: 1px solid var(--line);
+  padding-left: 8px;
+}
+
 .readStatus {
   min-height: 34px;
   padding: 7px 10px;
@@ -1038,8 +1047,9 @@ textarea {
   color: var(--good);
 }
 
-.readToggleButton {
-  min-width: 96px;
+.readStatusButton {
+  min-width: 78px;
+  font-weight: 720;
 }
 
 .sourceActions {

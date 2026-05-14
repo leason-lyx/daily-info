@@ -3,7 +3,7 @@
 import { Suspense } from "react";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { Ban, Check, ExternalLink, Eye, EyeOff, RefreshCcw, Save, Search, Sparkles, Star, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
+import { Check, ExternalLink, Eye, EyeOff, RefreshCcw, Save, Search, Sparkles, ThumbsDown, ThumbsUp, Trash2 } from "lucide-react";
 import { feedApi, itemsApi, sourcesApi } from "@/lib/apiDomains";
 import type { FeedPreset, Item, Source } from "@/lib/api";
 import {
@@ -258,7 +258,7 @@ function FeedView() {
     startTransition(() => router.replace(queryString ? `${pathname}?${queryString}` : pathname));
   }
 
-  async function itemAction(item: Item, action: "read" | "star" | "resummarize") {
+  async function itemAction(item: Item, action: "read" | "resummarize") {
     const updated = action === "resummarize" ? await itemsApi.resummarize(item.id) : await itemsApi.markItem(item.id, action);
     setItems((rows) => rows.map((row) => (row.id === item.id ? updated : row)));
     if (action === "resummarize" && updated.summary_status === "pending") {
@@ -266,26 +266,14 @@ function FeedView() {
     }
   }
 
-  async function feedbackAction(item: Item, eventType: "more_like_this" | "less_like_this" | "dismiss") {
+  async function feedbackAction(item: Item, eventType: "more_like_this" | "less_like_this") {
     setFeedbackPendingIds((ids) => new Set(ids).add(item.id));
     setPresetMessage("");
-    const previousItems = items;
-    const previousTotal = total;
     try {
-      if (eventType === "dismiss") {
-        setItems((rows) => rows.filter((row) => row.id !== item.id));
-        setTotal((value) => Math.max(value - 1, 0));
-      }
       await itemsApi.recordItemEvent(item.id, eventType, { preset_id: activePresetId, rank: currentRank || "latest" });
-      if (eventType === "more_like_this" || eventType === "less_like_this") {
-        setFeedbackSelections((current) => ({ ...current, [item.id]: eventType }));
-      }
-      setPresetMessage(eventType === "more_like_this" ? "已记录：更多类似内容" : eventType === "less_like_this" ? "已记录：减少类似内容" : "已记录：不感兴趣");
+      setFeedbackSelections((current) => ({ ...current, [item.id]: eventType }));
+      setPresetMessage(eventType === "more_like_this" ? "已记录：喜欢更多这样的内容" : "已记录：不喜欢推荐这样的内容");
     } catch (err) {
-      if (eventType === "dismiss") {
-        setItems(previousItems);
-        setTotal(previousTotal);
-      }
       setPresetMessage(err instanceof Error ? err.message : "记录反馈失败");
     } finally {
       setFeedbackPendingIds((ids) => {
@@ -578,54 +566,44 @@ function FeedView() {
                 <a className="button" href={item.url} target="_blank" rel="noreferrer" onClick={() => void itemsApi.recordItemEvent(item.id, "open", { url: item.url })}>
                   <ExternalLink size={16} /> Original
                 </a>
-                <span className={item.read ? "badge readStatus readStatusDone" : "badge readStatus"}>{readStatusLabel(item.read)}</span>
                 <button
-                  className="button readToggleButton"
+                  className={item.read ? "button readStatus readStatusButton readStatusDone" : "button readStatus readStatusButton"}
                   title={readButtonLabel(item.read)}
                   aria-label={readButtonLabel(item.read)}
                   onClick={() => itemAction(item, "read")}
                 >
                   {item.read ? <EyeOff size={16} /> : <Eye size={16} />}
-                  {readButtonLabel(item.read)}
-                </button>
-                <button
-                  className="iconButton"
-                  title={item.starred ? "Remove star" : "Star item"}
-                  aria-label={item.starred ? "Remove star" : "Star item"}
-                  onClick={() => itemAction(item, "star")}
-                >
-                  <Star size={16} fill={item.starred ? "currentColor" : "none"} />
+                  {readStatusLabel(item.read)}
                 </button>
                 <button className="button" title={summarizeButtonLabel(item.summary_status)} onClick={() => itemAction(item, "resummarize")} disabled={summarizeDisabled}>
                   <RefreshCcw size={16} />
                   {summarizeDisabled ? "生成中" : summarizeButtonLabel(item.summary_status)}
                 </button>
                 {currentRank === "for_you" ? (
-                  <>
+                  <div className="feedbackGroup" aria-label="推荐反馈">
                     <button
                       aria-pressed={selectedFeedback === "more_like_this"}
-                      className={selectedFeedback === "more_like_this" ? "button feedbackButton selected" : "button feedbackButton"}
+                      aria-label="我喜欢更多这样的内容"
+                      className={selectedFeedback === "more_like_this" ? "iconButton feedbackButton selected" : "iconButton feedbackButton"}
                       type="button"
-                      title="推荐更多类似内容"
+                      title="我喜欢更多这样的内容"
                       onClick={() => void feedbackAction(item, "more_like_this")}
                       disabled={feedbackPending}
                     >
-                      <ThumbsUp size={16} /> 更多类似
+                      <ThumbsUp size={16} />
                     </button>
                     <button
                       aria-pressed={selectedFeedback === "less_like_this"}
-                      className={selectedFeedback === "less_like_this" ? "button feedbackButton selected" : "button feedbackButton"}
+                      aria-label="我不喜欢推荐这样的内容"
+                      className={selectedFeedback === "less_like_this" ? "iconButton feedbackButton selected" : "iconButton feedbackButton"}
                       type="button"
-                      title="减少类似内容"
+                      title="我不喜欢推荐这样的内容"
                       onClick={() => void feedbackAction(item, "less_like_this")}
                       disabled={feedbackPending}
                     >
-                      <ThumbsDown size={16} /> 减少类似
+                      <ThumbsDown size={16} />
                     </button>
-                    <button className="button" type="button" title="从本次推荐中移除" onClick={() => void feedbackAction(item, "dismiss")} disabled={feedbackPending}>
-                      <Ban size={16} /> 不感兴趣
-                    </button>
-                  </>
+                  </div>
                 ) : null}
               </div>
             </article>
