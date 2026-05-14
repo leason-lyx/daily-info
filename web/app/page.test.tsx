@@ -83,9 +83,12 @@ describe("FeedPage", () => {
     render(createElement(FeedPage));
     await screen.findByRole("heading", { name: "智能体软件工程评测" });
 
-    await user.click(screen.getByRole("button", { name: "标为已读" }));
+    const initialReadButton = screen.getByRole("button", { name: "标为已读" });
+    expect(initialReadButton).toHaveTextContent("未读");
+
+    await user.click(initialReadButton);
     await waitFor(() => expect(api.itemsApi.markItem).toHaveBeenCalledWith("item-1", "read"));
-    expect(await screen.findByText("已读")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "标为未读" })).toHaveTextContent("已读");
 
     expect(screen.queryByRole("button", { name: "Star item" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "不感兴趣" })).not.toBeInTheDocument();

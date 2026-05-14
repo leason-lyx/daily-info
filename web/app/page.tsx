@@ -566,15 +566,14 @@ function FeedView() {
                 <a className="button" href={item.url} target="_blank" rel="noreferrer" onClick={() => void itemsApi.recordItemEvent(item.id, "open", { url: item.url })}>
                   <ExternalLink size={16} /> Original
                 </a>
-                <span className={item.read ? "badge readStatus readStatusDone" : "badge readStatus"}>{readStatusLabel(item.read)}</span>
                 <button
-                  className="button readToggleButton"
+                  className={item.read ? "button readStatus readStatusButton readStatusDone" : "button readStatus readStatusButton"}
                   title={readButtonLabel(item.read)}
                   aria-label={readButtonLabel(item.read)}
                   onClick={() => itemAction(item, "read")}
                 >
                   {item.read ? <EyeOff size={16} /> : <Eye size={16} />}
-                  {readButtonLabel(item.read)}
+                  {readStatusLabel(item.read)}
                 </button>
                 <button className="button" title={summarizeButtonLabel(item.summary_status)} onClick={() => itemAction(item, "resummarize")} disabled={summarizeDisabled}>
                   <RefreshCcw size={16} />

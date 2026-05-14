@@ -1047,8 +1047,9 @@ textarea {
   color: var(--good);
 }
 
-.readToggleButton {
-  min-width: 96px;
+.readStatusButton {
+  min-width: 78px;
+  font-weight: 720;
 }
 
 .sourceActions {
