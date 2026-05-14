@@ -55,8 +55,17 @@ uv run pytest
 ```bash
 cd web
 npm run lint
+npm run test
+npm run coverage
 npm run build
 ```
+
+前端测试说明：
+
+- `npm run test`：运行 Vitest + Testing Library，覆盖 `feedModel`、API client/domain 封装、Feed、Sources、New Source、Health、Settings 和 Sidebar 的核心行为。
+- `npm run coverage`：生成覆盖率报告，并执行初始门槛：statements、lines、functions 75%，branches 60%。
+- `npm run e2e`：运行 Playwright 验收 smoke，默认访问 `http://127.0.0.1:3000`，不会自动启动服务。
+- `npm run check`：串联 `lint`、`test`、`coverage`、`build`。
 
 验收测试必须通过 Docker Compose 覆盖本地部署路径：
 
@@ -64,6 +73,8 @@ npm run build
 docker compose -f docker-compose.yml -f docker-compose.localhost.yml up --build -d --force-recreate api worker scheduler web
 curl -fsS http://127.0.0.1:8000/api/health
 curl -fsS http://127.0.0.1:8000/api/source-definitions
+cd web
+npm run e2e
 ```
 
 `docker-compose.yml` 是普通 bridge network 的 base 配置，不直接发布端口；`docker-compose.localhost.yml` 仍使用 bridge network，但把 Web 和 API 端口发布到宿主机回环地址：`127.0.0.1:3000` 和 `127.0.0.1:8000`。如果需要远程访问，推荐继续用 Tailscale Serve 转发这些 localhost 端口，而不是让容器直接监听所有网卡。

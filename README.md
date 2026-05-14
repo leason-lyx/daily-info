@@ -163,8 +163,12 @@ Frontend checks:
 ```bash
 cd web
 npm run lint
+npm run test
+npm run coverage
 npm run build
 ```
+
+`npm run test` runs the Vitest + Testing Library suite for front-end logic and page behavior. `npm run coverage` enforces the initial front-end thresholds: 75% statements, lines, and functions, plus 60% branches. `npm run check` runs lint, tests, coverage, and build in sequence.
 
 For acceptance testing, use Docker Compose so validation follows the same runtime path as local deployment:
 
@@ -172,9 +176,11 @@ For acceptance testing, use Docker Compose so validation follows the same runtim
 docker compose -f docker-compose.yml -f docker-compose.localhost.yml up --build -d --force-recreate api worker scheduler web
 curl -fsS http://127.0.0.1:8000/api/health
 curl -fsS http://127.0.0.1:8000/api/source-definitions
+cd web
+npm run e2e
 ```
 
-For UI or feed behavior changes, also open the Compose-served web app in a browser and verify the affected workflow.
+`npm run e2e` runs Playwright against `http://127.0.0.1:3000` by default and assumes the Compose services are already running. For UI or feed behavior changes, also open the Compose-served web app in a browser and verify the affected workflow.
 
 ## Security Notes
 
