@@ -6,7 +6,7 @@ Daily Info is a self-hosted reading desk for research papers, engineering blogs,
 
 ## Features
 
-- Unified feed for papers, blogs, and posts, with search, source and priority filters, one-click feed presets, a For You recommendation view, deterministic cross-source deduplication, recommendation reasons, summary status, read/star states, and source-aware cleaned/generated tags.
+- Unified feed for papers, blogs, and posts, with search, source and priority filters, one-click feed presets, a For You recommendation view, deterministic cross-source deduplication, recommendation reasons, summary status, read state, and source-aware cleaned/generated tags.
 - Source Catalog backed by `config/sources/*.yaml`, with explicit subscriptions so only chosen sources are fetched and shown in the default feed.
 - Source preview and creation flow for RSS/Atom feeds, RSSHub routes, and HTML index fallback.
 - Background worker and scheduler for source fetching, fulltext extraction, optional auto-summary jobs, external trend refresh, profile building, and cached recommendation scoring.
@@ -84,7 +84,7 @@ When the same content appears in multiple sources, Daily Info stores one item ke
 
 Feed presets live in `config/feed-presets.yaml` for built-in views and in the database for custom saved views. Presets resolve to normal feed filters, so source group, source id, priority tier, time window, and latest/recommended/for-you ranking all use the same `/api/items` path. Source priority uses `SourceSubscription.priority_override` when present, otherwise the catalog `Source.priority`; lower numbers are more important and map to P0-P3 in the UI.
 
-The built-in `For You` preset uses a recent candidate window, cached recommendation scores when available, and explainable request-time scoring when the cache is missing or expired. Scores combine explicit recommendation preferences from Settings, decayed item events such as open/star/more-like-this/less-like-this/dismiss, source priority, recency, content quality, multi-source momentum, and external trend signals such as Hacker News. Recommendation data is stored locally in SQLite and does not change subscriptions, deduplication, or item provenance.
+The built-in `For You` preset uses a recent candidate window, cached recommendation scores when available, and explainable request-time scoring when the cache is missing or expired. Scores combine explicit recommendation preferences from Settings, decayed item events such as open and like/dislike recommendation feedback, source priority, recency, content quality, multi-source momentum, and external trend signals such as Hacker News. Recommendation data is stored locally in SQLite and does not change subscriptions, deduplication, or item provenance.
 
 Source definition files may include fetch attempts, fulltext policy, summary policy, filters, tags, grouping, and metadata. They should not contain API keys, cookies, tokens, or other secrets, including when edited from the web UI. If a source eventually needs credentials, store only a secret reference in catalog metadata and keep the secret value in runtime configuration.
 

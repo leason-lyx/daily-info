@@ -84,7 +84,7 @@ Catalog 是显式订阅模式：
 
 Feed 预设的内置视图定义在 `config/feed-presets.yaml`，自定义预设保存在数据库。预设会解析成普通 feed filter，同一条 `/api/items` 路径支持 source group/source id、优先级、时间窗口以及 latest/recommended/for-you 排序。source 优先级优先使用订阅上的 `priority_override`，否则使用 catalog 中的 `Source.priority`；数字越小越重要，并在 UI 中映射为 P0-P3。
 
-内置 `For You` 预设优先读取缓存推荐分数，缺失或过期时回退到请求时可解释打分。分数会结合 Settings 里的显式推荐偏好、open/star/more-like-this/less-like-this/dismiss 等行为事件、source 优先级、时效性、内容质量、多来源站内热度和 Hacker News 等外部趋势信号。推荐数据保存在本地 SQLite 中，只影响排序和解释，不会改变订阅、去重或来源归属。
+内置 `For You` 预设优先读取缓存推荐分数，缺失或过期时回退到请求时可解释打分。分数会结合 Settings 里的显式推荐偏好、打开原文和点赞/点踩推荐反馈等行为事件、source 优先级、时效性、内容质量、多来源站内热度和 Hacker News 等外部趋势信号。推荐数据保存在本地 SQLite 中，只影响排序和解释，不会改变订阅、去重或来源归属。
 
 Source definition 可以包含抓取方式、全文策略、摘要策略、过滤规则、标签、分组和元数据。它们应该被视为公开配置，不应包含 API key、cookie、token 或其他 secret；通过网页编辑时也必须遵守这一点。未来如果某个 source 需要认证，catalog 中只保存 secret 引用名，真实 secret 放在运行时配置里。
 
