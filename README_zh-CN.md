@@ -88,9 +88,7 @@ Feed 预设的内置视图定义在 `config/feed-presets.yaml`，自定义预设
 
 Source definition 可以包含抓取方式、全文策略、摘要策略、过滤规则、标签、分组和元数据。它们应该被视为公开配置，不应包含 API key、cookie、token 或其他 secret；通过网页编辑时也必须遵守这一点。未来如果某个 source 需要认证，catalog 中只保存 secret 引用名，真实 secret 放在运行时配置里。
 
-`Personal Posts` 分组用于单人更新源，既可以包含社交媒体账号，也可以包含个人博客。有官方 RSS 或 Atom 的个人博客应优先使用标准 `feed` adapter。
-
-X/Twitter 个人动态 source 默认使用 RSSHub route，例如 [`/twitter/user/:id/:routeParams?`](https://docs.rsshub.app/routes/popular)。公共 RSSHub 实例可以免费尝试，但 X route 稳定性不保证；如果以后需要更稳定的 X 抓取，可以自建 RSSHub，并把官方推荐的 `TWITTER_AUTH_TOKEN` 配在 source catalog 之外。
+`Personal Posts` 分组用于单人更新源。内置个人源应优先使用官方 RSS 或 Atom，并通过标准 `feed` adapter 抓取，确保默认 catalog 不依赖私有 RSSHub 凭据也可用。
 
 ## 本地开发
 

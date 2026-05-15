@@ -88,9 +88,7 @@ The built-in `For You` preset uses a recent candidate window, cached recommendat
 
 Source definition files may include fetch attempts, fulltext policy, summary policy, filters, tags, grouping, and metadata. They should not contain API keys, cookies, tokens, or other secrets, including when edited from the web UI. If a source eventually needs credentials, store only a secret reference in catalog metadata and keep the secret value in runtime configuration.
 
-`Personal Posts` is the group for single-person update sources, including social media accounts and personal blogs. Personal blogs with official RSS or Atom feeds should use the standard `feed` adapter.
-
-X/Twitter personal post sources use RSSHub routes such as [`/twitter/user/:id/:routeParams?`](https://docs.rsshub.app/routes/popular) by default. Public RSSHub instances keep this path free to try, but they may be less reliable for X routes. If a source needs more stable X access later, self-host RSSHub and configure its recommended `TWITTER_AUTH_TOKEN` outside the source catalog.
+`Personal Posts` is the group for single-person update sources. Built-in personal sources should use official RSS or Atom feeds through the standard `feed` adapter so the default catalog remains usable without private RSSHub credentials.
 
 ## Local Development
 

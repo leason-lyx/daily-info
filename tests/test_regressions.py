@@ -128,6 +128,44 @@ def test_fetch_feed_parses_arxiv_api_atom(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
+def test_source_audit_report_is_json_serializable_with_latest_item_dates(tmp_path: Path) -> None:
+    result = run_python(
+        """
+        import json
+        from datetime import datetime, timezone
+
+        from app.db import SessionLocal, init_db
+        from app.models import Item, ItemSource, Source, SourceRun
+        from app.source_audit import audit_report_json, build_audit_report
+
+        init_db()
+        with SessionLocal() as db:
+            source = Source(id="source", name="Source", content_type="blog", platform="test")
+            item = Item(
+                source_id="source",
+                canonical_url="https://example.com/item",
+                title="Item",
+                url="https://example.com/item",
+                content_type="blog",
+                platform="test",
+                source_name="Source",
+                published_at=datetime(2026, 5, 15, tzinfo=timezone.utc),
+            )
+            db.add_all([source, item])
+            db.flush()
+            db.add(ItemSource(item_id=item.id, source_id=source.id, source_name=source.name, url=item.url, canonical_url=item.canonical_url))
+            db.add(SourceRun(source_id=source.id, status="succeeded", raw_count=1, item_count=1, finished_at=datetime(2026, 5, 15, tzinfo=timezone.utc)))
+            db.commit()
+
+        report = build_audit_report([], None, [])
+        json.loads(audit_report_json(report))
+        print("ok")
+        """,
+        sqlite_url(tmp_path / "source-audit-json.db"),
+    )
+    assert result.stdout.strip() == "ok"
+
+
 def test_fetch_feed_parses_entry_categories_as_tags(tmp_path: Path) -> None:
     result = run_python(
         """
@@ -1473,56 +1511,19 @@ def test_openai_news_uses_full_official_rss_feed(tmp_path: Path) -> None:
     assert result.stdout.strip() == "ok"
 
 
-def test_tibo_x_source_uses_rsshub_route(tmp_path: Path) -> None:
+def test_builtin_catalog_excludes_private_credential_x_sources(tmp_path: Path) -> None:
     result = run_python(
         """
         from app.source_catalog import load_source_catalog
 
         definitions = {definition.id: definition for definition, _ in load_source_catalog()}
-        source = definitions["x-thsottiaux"]
-        attempt = source.fetch.attempts[0]
-
-        assert source.kind == "post"
-        assert source.platform == "x"
-        assert source.group == "Personal Posts"
-        assert source.auth.mode == "none"
-        assert source.auth.secret_ref == ""
-        assert attempt.adapter == "rsshub"
-        assert attempt.route == "/twitter/user/thsottiaux/readable=1&includeRts=0&count=20"
-        assert attempt.limit == 20
+        assert "x-thsottiaux" not in definitions
+        assert "x-karpathy" not in definitions
+        for source in definitions.values():
+            assert not (source.platform == "x" and any(attempt.adapter == "rsshub" for attempt in source.fetch.attempts))
         print("ok")
         """,
-        sqlite_url(tmp_path / "tibo-x-source.db"),
-    )
-    assert result.stdout.strip() == "ok"
-
-
-def test_karpathy_x_source_uses_rsshub_route(tmp_path: Path) -> None:
-    result = run_python(
-        """
-        from app.source_catalog import load_source_catalog
-
-        definitions = {definition.id: definition for definition, _ in load_source_catalog()}
-        source = definitions["x-karpathy"]
-        attempt = source.fetch.attempts[0]
-
-        assert source.title == "X - Andrej Karpathy"
-        assert source.kind == "post"
-        assert source.platform == "x"
-        assert source.homepage == "https://x.com/karpathy"
-        assert source.group == "Personal Posts"
-        assert source.auth.mode == "none"
-        assert source.auth.secret_ref == ""
-        assert source.fulltext.mode == "feed_only"
-        assert source.summary.auto is True
-        assert source.tagging.mode == "llm"
-        assert attempt.adapter == "rsshub"
-        assert attempt.route == "/twitter/user/karpathy/readable=1&includeRts=0&count=20"
-        assert attempt.limit == 20
-        assert attempt.timeout_seconds == 20
-        print("ok")
-        """,
-        sqlite_url(tmp_path / "karpathy-x-source.db"),
+        sqlite_url(tmp_path / "no-private-x-sources.db"),
     )
     assert result.stdout.strip() == "ok"
 

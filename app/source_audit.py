@@ -165,6 +165,10 @@ def build_audit_report(fetch_reports: list[dict], backup_path: Path | None, stra
     }
 
 
+def audit_report_json(report: dict) -> str:
+    return json.dumps(report, ensure_ascii=False, indent=2, default=str)
+
+
 async def run(args: argparse.Namespace) -> dict:
     init_db()
     backup_path = backup_sqlite_database(get_settings().database_url) if args.backup else None
@@ -180,7 +184,7 @@ async def run(args: argparse.Namespace) -> dict:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         output_path = Path("artifacts") / f"source-audit-{timestamp}.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    output_path.write_text(audit_report_json(report), encoding="utf-8")
     report["report_path"] = str(output_path)
     return report
 
@@ -193,7 +197,7 @@ def main() -> None:
     parser.add_argument("-o", "--output", help="JSON report path. Defaults to artifacts/source-audit-<timestamp>.json.")
     parser.set_defaults(backup=True, apply_strategies=True, fetch=True)
     report = asyncio.run(run(parser.parse_args()))
-    print(json.dumps(report, ensure_ascii=False, indent=2))
+    print(audit_report_json(report))
 
 
 if __name__ == "__main__":
