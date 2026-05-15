@@ -20,7 +20,7 @@ config/sources/
 
 运行时 catalog 以数据库为准：`/sources` 页面编辑或新建 source 时，后端只更新数据库中的 definition，不会修改仓库里的 `config/sources/*.yaml`。内置 YAML 继续作为可审查、可版本管理的 seed；用户自定义和覆盖配置保存在数据库。本轮不保留旧 source-pack 导入/导出 API，需要版本化运行时修改时应人工审查数据库中的 definition，再整理成新的 `config/sources/*.yaml` 变更。
 
-`Personal Posts` 分组用于单人更新源，既可以包含社交媒体账号，也可以包含个人博客。有官方 RSS 或 Atom 的个人博客优先使用 `feed` adapter；X/Twitter 账号默认使用 RSSHub route。
+`Personal Posts` 分组用于单人更新源。内置个人源优先使用官方 RSS 或 Atom，并通过 `feed` adapter 抓取，避免默认 catalog 依赖私有 RSSHub 凭据。
 
 ## Source Definition 字段
 
@@ -52,7 +52,7 @@ config/sources/
 支持的 adapter：
 
 - `feed`：标准 RSS/Atom。
-- `rsshub`：RSSHub route 或 RSSHub URL；X/Twitter 用户时间线可使用 [`/twitter/user/:id/:routeParams?`](https://docs.rsshub.app/routes/popular)，例如 `includeRts=0` 排除 retweets。
+- `rsshub`：RSSHub route 或 RSSHub URL；适合无需私有账号凭据即可稳定访问的 RSSHub 路由。
 - `html_index`：没有 feed 时的 HTML 列表页 fallback。
 - `page_index`：官方列表页解析，提取文章链接和发布时间；适合 RSSHub route 漏项、上游无专用 feed，或类似 Alignment Science Blog 这种按年份路径发布的 source。
 
@@ -115,7 +115,7 @@ Source catalog 不能包含真实 secret 值。
 
 如果未来某个 source 需要认证，catalog 中只保存 `secret_ref` 这样的引用名，真实 secret 放在 `.env`、settings 或其他运行时 secret store。
 
-公共 RSSHub 实例可免费尝试 X/Twitter route，但稳定性不保证。如果以后改用自建 RSSHub 提高 X route 可用性，按 RSSHub 官方建议配置 `TWITTER_AUTH_TOKEN`，并继续把真实 cookie/token 保存在运行时环境中，不写入 source catalog。
+需要私有凭据的 RSSHub route 不应作为默认内置源。如果以后加入这类 source，catalog 中只保存公开 route 和 `secret_ref`，真实 cookie/token 继续放在运行时环境中。
 
 网页编辑也遵守同一规则：不要在 source 的标签、过滤词、URL、metadata 或 auth 字段里保存真实 secret。
 
